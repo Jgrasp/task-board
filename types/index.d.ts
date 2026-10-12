@@ -44,7 +44,6 @@ declare module 'claude-code' {
       /** The card handed to Claude with Work on it, until Claude's turn on it ends. */
       working: string | null
       banner: Banner | null
-      scrolled: number
       linkedTo: string | null
     }
   }

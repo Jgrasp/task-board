@@ -17,7 +17,7 @@ A To do / Doing / Done board in a side pane, filled as Claude works, and by you.
 - **Sessions:** a session whose first prompt holds a card's tag (`[board:<card id>]`, shown in the card's details) is linked to the card: the card moves to Doing, shows ⇄, and its details say whether the session is working or waiting for you, with **↗ Open session** to open it in the desktop app. Claude writes the tag when it drafts a prompt for a new session, and can link a card by hand to a session's `local_…` id or `claude://` link.
 - **Banner:** ask Claude to show a message at the top of the board: a bold title, a Markdown text and a color (green, yellow, red, blue, purple, gray or any `#rrggbb`). Claude is reminded of it each turn, so it can keep it current.
 
-- **Long boards:** in the desktop app and the terminal, the columns scroll with the wheel inside the board, under its header, and an open card's details stay pinned below them.
+- **Floating details:** in the desktop app and the terminal, a card's details float over the board right under the card you clicked, and the composer right under the header, so their buttons show where you are. Cards are outlined blue in To do, orange in Doing and green in Done.
 
 ✦ marks Claude's cards, ◆ a plan's, ≡ one with a description. `/board` opens the pane at any time. The board belongs to the session: a new session starts with an empty one. Done shows its latest cards first. Nothing is ever dropped from the board by itself.
 

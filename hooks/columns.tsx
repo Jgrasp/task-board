@@ -3,7 +3,7 @@ import type { ClientModule, ClientPointerEvent } from 'claude-code'
 /** A card as the columns draw it: plain data, handed over by the board's render hook. */
 export type ColumnCard = { id: string; title: string; column: number; tag: string; isDone: boolean; isOpen: boolean; isBusy: boolean }
 
-export type ColumnsProps = { cards: ColumnCard[]; names: string[]; counts: number[]; dots: Array<string | null>; offset: number }
+export type ColumnsProps = { cards: ColumnCard[]; names: string[]; counts: number[]; dots: Array<string | null> }
 
 /** What the module sends the board: a card dropped on another column, or a card clicked. */
 export type ColumnsMessage = { type: 'move'; id: string; column: number } | { type: 'open'; id: string }
@@ -93,25 +93,6 @@ export function columnsHeightFor(cards: readonly ColumnCard[], regionColumns: nu
   return Math.max(...bottoms)
 }
 
-export function textRows(text: string, width: number): number {
-  return text.split('\n').reduce((rows, line) => rows + Math.max(1, wrap(line, Math.max(1, width), Number.MAX_SAFE_INTEGER).length), 0)
-}
-
-export function packedRows(widths: readonly number[], room: number): number {
-  let rows = widths.length === 0 ? 0 : 1
-  let used = 0
-  for (const width of widths) {
-    if (used > 0 && used + 1 + width > room) {
-      rows += 1
-      used = width
-    } else {
-      used += (used > 0 ? 1 : 0) + width
-    }
-  }
-
-  return rows
-}
-
 /** The column under the pointer's column `x`. */
 export function columnAt(x: number, columnWidth: number): number {
   return Math.max(0, Math.min(2, Math.floor(x / (columnWidth + 1))))
@@ -133,15 +114,13 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
   const { Box, Text } = surface.elements
   const drag = surface.state?.drag ?? null
   const at = layout(props.cards, surface.columns)
-  const offset = Math.max(0, props.offset)
-  const rowOf = (top: number) => top - offset
   const leftOf = (column: number) => column * (at.columnWidth + 1)
 
   surface.onPointer((event: ClientPointerEvent) => {
     const current = surface.state?.drag ?? null
     if (event.type === 'down' && event.button === 'left') {
-      const card = event.y < 1 ? undefined : cardAt(at, event.x, event.y + offset)
-      if (card !== undefined && rowOf(card.top) >= 1) {
+      const card = cardAt(at, event.x, event.y)
+      if (card !== undefined) {
         surface.setState({
           drag: {
             id: card.id,
@@ -153,7 +132,7 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
             atX: event.x,
             atY: event.y,
             grabX: event.x - leftOf(card.column),
-            grabY: event.y - rowOf(card.top),
+            grabY: event.y - card.top,
           },
         })
       }
@@ -213,7 +192,7 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
       {[0, 1, 2].map(column => {
         const isTarget = isDragging && drag.over === column && drag.from !== column
         const dot = props.dots[column] ?? null
-        const visible = at.cards.filter(placed => placed.column === column && rowOf(placed.top) >= 1)
+        const placedCards = at.cards.filter(placed => placed.column === column)
         return (
           <Box key={`column:${column}`} flexDirection="column" width={at.columnWidth}>
             <Box flexDirection="row" columnGap={1}>
@@ -223,22 +202,21 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
               </Text>
               <Text dimColor>{String(props.counts[column] ?? 0)}</Text>
             </Box>
-            {visible.map((placed, index) => {
+            {placedCards.map(placed => {
               const card = props.cards.find(one => one.id === placed.id)
               if (card === undefined) return null
               // The card picked up stays in place, dimmed; its ghost is what moves.
               const isCarried = isDragging && drag.id === card.id
               const isLit = !isCarried && (card.isOpen || card.isBusy)
-              const above = index === 0 ? rowOf(placed.top) - 1 : 0
+              const color = props.dots[column] ?? null
               return (
                 <Box
                   key={`card:${card.id}`}
                   flexDirection="column"
-                  borderStyle="round"
-                  {...(isLit ? { borderColor: ACCENT } : { borderDimColor: true })}
+                  borderStyle={isLit ? 'bold' : 'round'}
+                  {...(isCarried || color === null ? { borderDimColor: true } : { borderColor: color })}
                   paddingX={1}
                   marginBottom={1}
-                  {...(above > 0 ? { marginTop: above } : {})}
                 >
                   {placed.lines.map(line => (
                     <Text wrap="truncate-end" dimColor={card.isDone || isCarried}>

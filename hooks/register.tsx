@@ -29,7 +29,7 @@ import {
   workPrompt,
 } from './lib'
 import type { BoardToolInput } from './lib'
-import { columnsHeightFor, layout, packedRows, textRows, wrap } from './columns'
+import { columnsHeightFor, layout, wrap } from './columns'
 import type { ColumnsMessage, ColumnsProps } from './columns'
 
 const PANE = 'task-board'
@@ -38,8 +38,9 @@ const TOOL = 'board'
 // Theme colors follow the light or dark scheme by themselves; the green is one that reads on both.
 const ACCENT = 'claude'
 const GREEN = '#2da44e'
+const BLUE = '#2f81f7'
 /** Each column's dot. */
-const DOT: Record<Column, { color?: string }> = { todo: {}, doing: { color: ACCENT }, done: { color: GREEN } }
+const DOT: Record<Column, { color?: string }> = { todo: { color: BLUE }, doing: { color: ACCENT }, done: { color: GREEN } }
 /** The mark in a card's footer: who put it there (✦ Claude, ◆ a plan); the card's details say it in words. */
 const TAG: Record<Card['source'], string> = { you: '', todo: '✦', claude: '✦', plan: '◆' }
 /** Rows above the columns (the progress row and the blank under it) and below them (the pane's last blank). */
@@ -47,29 +48,17 @@ const HEADER_ROWS = 3
 /** Cells in the progress bar. */
 const BAR = 12
 const POLL_MS = 5_000
-const COMPOSER_ROWS = 12
-const MIN_COLUMNS_ROWS = 8
 
 const cards = atom({ plugin: 'task-board', key: 'cards' } as const, [])
 const selected = atom({ plugin: 'task-board', key: 'selected' } as const, null)
 const composer = atom({ plugin: 'task-board', key: 'composer' } as const, null)
 const working = atom({ plugin: 'task-board', key: 'working' } as const, null)
 const banner = atom({ plugin: 'task-board', key: 'banner' } as const, null)
-const scrolled = atom({ plugin: 'task-board', key: 'scrolled' } as const, 0)
 const linkedTo = atom({ plugin: 'task-board', key: 'linkedTo' } as const, null)
 
 /** The board's full tool name, as Claude calls it: `mcp__task-board__board`, else what registering answered. */
 let toolName = `mcp__task-board__${TOOL}`
 const seen = new Map<string, number>()
-let frame: {
-  top: number
-  height: number
-  max: number
-  window: number
-  space: number
-  placed: ReadonlyArray<{ id: string; top: number; bottom: number }>
-  detailsRows: (id: string) => number
-} | null = null
 
 /**
  * Writes the board; the first cards Claude puts on an empty board open the
@@ -91,6 +80,10 @@ async function compose($: EngineInterface, card: Card | null): Promise<void> {
       : { id: card.id, title: card.title, note: card.note, hasNote: false },
   )
   await $.ui.focus({ requestId: PANE, key: 'title' }).catch(() => undefined)
+}
+
+async function closeComposer($: EngineInterface): Promise<void> {
+  await update($, composer, () => null)
 }
 
 /** Swaps the Title field for the Description field, and moves the cursor into it. */
@@ -128,24 +121,13 @@ async function saveComposer($: EngineInterface): Promise<void> {
         : editCard(current, id, { title: draft.title, note: draft.note }),
     false,
   )
-  await update($, composer, () => null)
+  await closeComposer($)
 }
 
 async function select($: EngineInterface, id: string | null): Promise<void> {
-  const opening = id !== null && (await read($, selected)) !== id
-  if (opening && frame !== null) {
-    const at = frame
-    const card = at.placed.find(one => one.id === id)
-    const height = Math.max(MIN_COLUMNS_ROWS, at.space - at.detailsRows(id))
-    if (card !== undefined) {
-      await update($, scrolled, current => {
-        const offset = Math.max(0, current)
-        if (card.bottom >= offset + height) return card.bottom - height + 1
-        return card.top - 1 < offset ? card.top - 1 : offset
-      })
-    }
-  }
-  await update($, selected, current => (current === id ? null : id))
+  const current = await read($, selected)
+  await update($, selected, () => (id === null || current === id ? null : id))
+  await update($, composer, () => null)
 }
 
 async function move($: EngineInterface, id: string, column: Column): Promise<void> {
@@ -154,7 +136,7 @@ async function move($: EngineInterface, id: string, column: Column): Promise<voi
 
 async function remove($: EngineInterface, id: string): Promise<void> {
   await setCards($, current => removeCard(current, id), false)
-  if ((await read($, selected)) === id) await update($, selected, () => null)
+  if ((await read($, selected)) === id) await select($, null)
 }
 
 /**
@@ -401,16 +383,6 @@ export const register: Register = on => {
     return {}
   })
 
-  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    const at = frame
-    if (at === null || at.max === 0 || e.origin.kind !== 'person') return next(e)
-    if (e.pointer !== undefined && e.pointer.row + at.window >= at.top + at.height) return next(e)
-    const current = Math.min(at.max, Math.max(0, await read($, scrolled)))
-    const target = Math.min(at.max, Math.max(0, current + e.by * 2))
-    if (target !== current) await update($, scrolled, () => target)
-
-    return {}
-  })
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
@@ -445,14 +417,14 @@ export const register: Register = on => {
       const isOpen = card.id === openId
       const isBusy = isLive(card)
       const isDone = card.column === 'done'
-      const next = neighbour(card.column, 1)
+      const ahead = neighbour(card.column, 1)
       const tag = tagOf(card)
       return (
         <Box
           key={`card:${card.id}`}
           flexDirection="column"
-          borderStyle="round"
-          {...(isOpen || isBusy ? { borderColor: ACCENT } : { borderDimColor: true })}
+          borderStyle={isOpen || isBusy ? 'bold' : 'round'}
+          borderColor={DOT[card.column].color ?? ACCENT}
           hover={{ borderColor: ACCENT }}
           paddingX={1}
         >
@@ -465,8 +437,8 @@ export const register: Register = on => {
             </Text>
             <Box flexDirection="row" columnGap={1}>
               <Button key={`open:${card.id}`} label={isOpen ? 'Close' : 'Open'} plain dimColor onPress={() => void select($, card.id)} />
-              {next !== null && (
-                <Button key={`next:${card.id}`} label="›" plain dimColor onPress={() => void move($, card.id, next)} />
+              {ahead !== null && (
+                <Button key={`next:${card.id}`} label="›" plain dimColor onPress={() => void move($, card.id, ahead)} />
               )}
             </Box>
           </Box>
@@ -494,7 +466,6 @@ export const register: Register = on => {
       names: COLUMNS.map(column => COLUMN_NAME[column]),
       counts: COLUMNS.map(column => board.filter(card => card.column === column).length),
       dots: COLUMNS.map(column => DOT[column].color ?? null),
-      offset: 0,
     }
 
     const bannerWidth = Math.max(10, e.props.bodyColumns - 4)
@@ -524,51 +495,8 @@ export const register: Register = on => {
         </Box>
       )
 
-    const inner = Math.max(10, e.props.bodyColumns - 4)
-    const detailsRows = (id: string) => {
-      const card = board.find(one => one.id === id)
-      if (card === undefined) return 0
-      const left = neighbour(card.column, -1)
-      const right = neighbour(card.column, 1)
-      const labels = [
-        card.session?.host != null ? '↗ Open session' : null,
-        card.column === 'done' ? null : card.id === busy ? 'Claude is on it' : '▶ Work on it',
-        left === null ? null : `‹ ${COLUMN_NAME[left]}`,
-        right === null ? null : `${COLUMN_NAME[right]} ›`,
-        'Edit',
-        card.session === undefined ? null : 'Unlink',
-        'Delete',
-      ].filter((label): label is string => label !== null)
-      const session = card.session === undefined ? `To follow a session on this card, start its first prompt with ${cardTag(card.id)}` : sessionText(card.session, now)
-      return (
-        6 +
-        textRows(card.title, inner - 6) +
-        textRows(session, inner) +
-        (card.note === '' ? 0 : 1 + textRows(card.note, inner)) +
-        packedRows(
-          labels.map(label => label.length + 4),
-          inner,
-        )
-      )
-    }
     const contentRows = columnsHeightFor(columnsProps.cards, e.props.bodyColumns)
-    const space = e.props.scroll.bodyRows - HEADER_ROWS - bannerRows
-    const panelRows = (open === undefined ? 0 : detailsRows(open.id)) + (writing !== null && Input !== undefined ? COMPOSER_ROWS : 0)
-    const room = Math.max(MIN_COLUMNS_ROWS, space - panelRows)
-    const columnsHeight = panelRows > 0 ? Math.min(contentRows, room) : room
-    const maxOffset = Math.max(0, contentRows - columnsHeight)
-    const columns = { ...columnsProps, offset: Math.min(maxOffset, Math.max(0, await read($, scrolled))) }
-    if (Client !== undefined && board.length > 0) {
-      frame = {
-        top: bannerRows + HEADER_ROWS - 1,
-        height: columnsHeight,
-        max: maxOffset,
-        window: e.props.scroll.offset,
-        space,
-        placed: layout(columns.cards, e.props.bodyColumns).cards,
-        detailsRows,
-      }
-    }
+    const columnsHeight = Math.max(contentRows, e.props.scroll.bodyRows - HEADER_ROWS - bannerRows)
 
     const columnView = (column: Column) => {
       const inColumn = board.filter(card => card.column === column)
@@ -596,7 +524,7 @@ export const register: Register = on => {
     const doneCount = board.filter(card => card.column === 'done').length
     const filled = board.length === 0 ? 0 : Math.round((doneCount / board.length) * BAR)
     const newCard =
-      Input === undefined || writing !== null ? null : (
+      Input === undefined ? null : (
         <Button key="new" label="+ New card" variant="secondary" onPress={() => void compose($, null)} />
       )
     const progress = (
@@ -615,12 +543,15 @@ export const register: Register = on => {
       </Box>
     )
 
+    const floats = Client !== undefined && board.length > 0
+    const frame = floats ? { backgroundColor: 'inverseText' } : { marginTop: 1 }
+
     const details = (card: Card) => {
       const left = neighbour(card.column, -1)
       const right = neighbour(card.column, 1)
       const session = card.session
       return (
-        <Box key={`details:${card.id}`} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1} marginTop={1}>
+        <Box key={`details:${card.id}`} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1} {...frame}>
           <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
             <Box flexDirection="row" columnGap={1} flexShrink={1}>
               <Text {...DOT[card.column]} dimColor={DOT[card.column].color === undefined}>
@@ -671,9 +602,80 @@ export const register: Register = on => {
       )
     }
 
+    const composerView =
+      writing === null || Input === undefined ? null : (
+      <Box
+        key="composer"
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={ACCENT}
+        paddingX={1}
+        paddingY={1}
+        rowGap={1}
+        {...frame}
+      >
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text bold>{writing.id === null ? 'New card' : 'Edit card'}</Text>
+          <Button key="cancel-x" label="✕" plain dimColor onPress={() => void closeComposer($)} />
+        </Box>
+        {/* One field at a time: each field's Enter label is drawn as a button, always. */}
+        {!writing.hasNote ? (
+          <Box flexDirection="column" rowGap={1}>
+            <Input
+              key="title"
+              label="Title"
+              placeholder="What needs doing"
+              value={writing.title}
+              submitLabel={saveLabel}
+              autoFocus
+              onInput={text => void typeIn($, 'title', text)}
+              onSubmit={text => void typeIn($, 'title', text).then(() => saveComposer($))}
+            />
+            <Box>
+              <Button
+                key="add-note"
+                label={writing.note === '' ? '+ Description' : 'Edit description'}
+                plain
+                dimColor
+                onPress={() => void showNote($)}
+              />
+            </Box>
+          </Box>
+        ) : (
+          <Box flexDirection="column" rowGap={1}>
+            <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+              <Text bold wrap="wrap">
+                {writing.title === '' ? 'Untitled' : writing.title}
+              </Text>
+              <Button key="back-title" label="‹ Title" plain dimColor onPress={() => void showTitle($)} />
+            </Box>
+            <Input
+              key="note"
+              label="Description"
+              placeholder="Why, where, what done means"
+              value={writing.note}
+              submitLabel={saveLabel}
+              autoFocus
+              onInput={text => void typeIn($, 'note', text)}
+              onSubmit={text => void typeIn($, 'note', text).then(() => saveComposer($))}
+            />
+          </Box>
+        )}
+      </Box>
+      )
+
+    const panel = composerView ?? (open === undefined ? null : details(open))
+    const isFloating = panel !== null && floats
+    const clientTop = bannerRows + HEADER_ROWS - 1
+    const anchorId = writing === null ? openId : writing.id
+    const anchor = anchorId === null ? undefined : layout(columnsProps.cards, e.props.bodyColumns).cards.find(one => one.id === anchorId)
+    const panelTop = clientTop + (anchor === undefined ? 0 : anchor.bottom + 1)
+    const panelRows = 14 + (open === undefined || open.note === '' ? 0 : wrap(open.note, Math.max(10, e.props.bodyColumns - 4), 99).length + 1)
+    const overflow = isFloating ? Math.max(0, panelTop + panelRows - clientTop - columnsHeight) : 0
+
     return (
       // A focus ring at the content's top or bottom edge is cut off: keep a line below the last element.
-      <Box flexDirection="column" paddingBottom={1}>
+      <Box flexDirection="column" paddingBottom={1 + overflow}>
         {bannerView}
         {board.length === 0 ? (
           <Box flexDirection="column">
@@ -688,7 +690,7 @@ export const register: Register = on => {
             {header}
             {Client !== undefined ? (
               // Dragging needs the pointer, which only a Client hears: it draws the columns itself.
-              <Client key="columns" module="./columns.tsx" props={columns} width="100%" height={columnsHeight} />
+              <Client key="columns" module="./columns.tsx" props={columnsProps} width="100%" height={columnsHeight} />
             ) : (
               <Box flexDirection="row" columnGap={1}>
                 {COLUMNS.map(columnView)}
@@ -696,67 +698,13 @@ export const register: Register = on => {
             )}
           </Box>
         )}
-        {writing !== null && Input !== undefined && (
-          <Box
-            key="composer"
-            flexDirection="column"
-            borderStyle="round"
-            borderColor={ACCENT}
-            paddingX={1}
-            paddingY={1}
-            rowGap={1}
-            marginTop={1}
-          >
-            <Box flexDirection="row" justifyContent="space-between">
-              <Text bold>{writing.id === null ? 'New card' : 'Edit card'}</Text>
-              <Button key="cancel-x" label="✕" plain dimColor onPress={() => void update($, composer, () => null)} />
-            </Box>
-            {/* One field at a time: each field's Enter label is drawn as a button, always. */}
-            {!writing.hasNote ? (
-              <Box flexDirection="column" rowGap={1}>
-                <Input
-                  key="title"
-                  label="Title"
-                  placeholder="What needs doing"
-                  value={writing.title}
-                  submitLabel={saveLabel}
-                  autoFocus
-                  onInput={text => void typeIn($, 'title', text)}
-                  onSubmit={text => void typeIn($, 'title', text).then(() => saveComposer($))}
-                />
-                <Box>
-                  <Button
-                    key="add-note"
-                    label={writing.note === '' ? '+ Description' : 'Edit description'}
-                    plain
-                    dimColor
-                    onPress={() => void showNote($)}
-                  />
-                </Box>
-              </Box>
-            ) : (
-              <Box flexDirection="column" rowGap={1}>
-                <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
-                  <Text bold wrap="wrap">
-                    {writing.title === '' ? 'Untitled' : writing.title}
-                  </Text>
-                  <Button key="back-title" label="‹ Title" plain dimColor onPress={() => void showTitle($)} />
-                </Box>
-                <Input
-                  key="note"
-                  label="Description"
-                  placeholder="Why, where, what done means"
-                  value={writing.note}
-                  submitLabel={saveLabel}
-                  autoFocus
-                  onInput={text => void typeIn($, 'note', text)}
-                  onSubmit={text => void typeIn($, 'note', text).then(() => saveComposer($))}
-                />
-              </Box>
-            )}
+        {isFloating ? (
+          <Box key="panel" position="absolute" top={panelTop} left={0} width="100%" flexDirection="column">
+            {panel}
           </Box>
+        ) : (
+          panel
         )}
-        {open !== undefined && details(open)}
       </Box>
     )
   })

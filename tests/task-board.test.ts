@@ -16,7 +16,7 @@ import {
   taskCreated,
   taskUpdated,
 } from '../hooks/lib'
-import { cardAt, columnAt, layout, packedRows, textRows, wrap } from '../hooks/columns'
+import { cardAt, columnAt, layout, wrap } from '../hooks/columns'
 import type { ColumnCard } from '../hooks/columns'
 
 const NOW = Date.parse('2026-10-06T10:00:00Z')
@@ -53,11 +53,11 @@ Trips recorded without a connection are lost.
 - Try it in airplane mode
 `
 
-type Fake = { opened: string[]; prompts: string[]; toasts: string[]; clock: MockClock }
+type Fake = { opened: string[]; closed: string[]; prompts: string[]; toasts: string[]; clock: MockClock }
 
 /** Stands in for the session, the tools beneath the mod and the surface. */
 async function fake($: Engine, on: On): Promise<Fake> {
-  const state: Fake = { opened: [], prompts: [], toasts: [], clock: mock.clock(on, { now: NOW }) }
+  const state: Fake = { opened: [], closed: [], prompts: [], toasts: [], clock: mock.clock(on, { now: NOW }) }
   on('command.register', () => ({ value: { command: 'board' } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__task-board__${e.name}` } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -65,6 +65,11 @@ async function fake($: Engine, on: On): Promise<Fake> {
     state.opened.push(e.id)
 
     return { value: { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    state.closed.push(e.id)
+
+    return { value: undefined }
   })
   on('ui.focus', () => ({}))
   on('ui.toast', ($, e) => {
@@ -123,7 +128,6 @@ describe('pane', () => {
     // A title is needed.
     await ui.press({ key: 'new' })
     expect(await ui.find({ type: 'Text', text: 'New card' })).toBeDefined()
-    expect(await ui.find({ key: 'new' })).toBeUndefined()
     expect(await ui.find({ key: 'note' })).toBeUndefined()
     await ui.input({ key: 'title', text: '' })
     expect(state.toasts).toEqual(['Give the card a title.'])
@@ -141,7 +145,6 @@ describe('pane', () => {
     expect(await ui.find({ type: 'Text', text: 'Fix login crash on iOS 17' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '≡' })).toBeDefined()
     expect(await texts(ui)).toEqual(expect.arrayContaining(['To do', '1', 'Doing', '0', 'Done', 'No cards', '0 of 1 done']))
-    expect(state.opened).toEqual([])
   })
 
   test("Claude's to-do list fills the board and moves its cards; the first cards open the pane", async ($, on) => {
@@ -223,7 +226,7 @@ describe('pane', () => {
     expect(removed.text).toBe('Removed "Localise the banner".')
   })
 
-  test('a card opens its details: move it, hand it to Claude, delete it', async ($, on) => {
+  test('a card opens its details: move it, hand it to Claude, edit it, delete it', async ($, on) => {
     const state = await fake($, on)
     const ui = await $.ui.mount(PANE)
     await newCard(ui, 'Add an offline banner')
@@ -240,17 +243,28 @@ describe('pane', () => {
     expect(state.prompts).toEqual(['Work on this card from the task board: "Add an offline banner"'])
     expect((await ui.find({ key: 'work' }))?.text).toBe('Claude is on it')
 
-    // Edit opens the composer on the card.
+    // Edit opens the composer on the card, in the same pane; saving shows the card again.
     await ui.press({ key: 'edit' })
     expect(await ui.find({ type: 'Text', text: 'Edit card' })).toBeDefined()
     expect(await ui.find({ key: 'note' })).toBeUndefined()
     expect((await ui.find({ key: 'add-note' }))?.text).toBe('+ Description')
     await ui.press({ key: 'add-note' })
     await ui.input({ key: 'note', text: 'Show it while offline' })
-    expect(await texts(ui)).toEqual(expect.arrayContaining(['Show it while offline']))
+    expect(await texts(ui)).toEqual(expect.arrayContaining(['Show it while offline', 'Doing · Added by you']))
 
     await ui.press({ key: 'delete' })
     expect(await ui.find({ type: 'Text', text: 'Nothing on the board yet' })).toBeDefined()
+  })
+
+  test('the details close with their ✕', async ($, on) => {
+    await fake($, on)
+    await $.tool.call({ tool: TOOL, action: 'add', title: 'Close me' })
+    const ui = await $.ui.mount(PANE)
+    await openCard(ui, 'Close me')
+    expect((await ui.find({ type: 'Button', text: 'Close' }))).toBeDefined()
+    await ui.press({ key: 'close' })
+    expect(await ui.find({ key: 'close' })).toBeUndefined()
+    expect((await ui.find({ type: 'Button', text: 'Close' }))).toBeUndefined()
   })
 
   test('/board opens the pane', async ($, on) => {
@@ -303,8 +317,7 @@ describe('dragging', () => {
     await ui.pointer({ type: 'down', x: still.x, y: still.y, button: 'left' })
     await ui.pointer({ type: 'up', x: still.x, y: still.y, button: 'left' })
     expect(await ui.find({ type: 'Text', text: 'To do · Added by Claude' })).toBeDefined()
-    // With a card's details open below, the columns keep their own height.
-    expect(JSON.stringify(await ui.drawn())).not.toContain('"height":37')
+    expect(JSON.stringify(await ui.drawn())).toContain('"height":37')
 
     // A drag released in its own column moves nothing.
     await ui.pointer({ type: 'down', x: still.x, y: still.y, button: 'left' })
@@ -328,22 +341,19 @@ describe('dragging', () => {
     expect((await $.tool.call({ tool: TOOL, action: 'list' })).text).toMatch(/Doing \(1\)\n- \[c\w+\] Drag me/)
   })
 
-  test('with many cards the columns scroll inside the pane, and an open card keeps its details in view', async ($, on) => {
+  test('with many cards the columns take their whole height and the details float under the card', async ($, on) => {
     await fake($, on)
     for (let n = 1; n <= 14; n += 1) await $.tool.call({ tool: TOOL, action: 'add', title: `Task number ${n}` })
     const ids = [...((await $.tool.call({ tool: TOOL, action: 'list' })).text ?? '').matchAll(/\[(c\w+)\]/g)].map(match => match[1] ?? '')
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-    await ui.resize({ columns: 60, rows: 37, in: 'columns' })
-    expect(JSON.stringify(await ui.drawn())).toContain('"offset":0},"width":"100%","height":37')
-
+    expect(JSON.stringify(await ui.drawn())).toContain('"width":"100%","height":71')
     await ui.post({ type: 'open', id: ids.at(-1) ?? '' })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('"width":"100%","height":71')
+    // The details float over the board, right under the card that opened them.
+    expect(drawn).toContain('{"type":"Box","props":{"key":"panel","position":"absolute","top":72,"left":0,"width":"100%"')
+    expect(drawn).toContain('"paddingBottom":14')
     expect(await ui.find({ type: 'Text', text: 'To do · Added by Claude' })).toBeDefined()
-    expect(JSON.stringify(await ui.drawn())).toContain('"offset":43},"width":"100%","height":27')
-    await ui.resize({ columns: 60, rows: 27, in: 'columns' })
-    const columns = JSON.stringify(await ui.drawn({ in: 'columns' }))
-    expect(columns).toMatch(new RegExp(`"key":"card:${ids[9]}"[^}]*"marginTop":2`))
-    expect(columns).toContain(`"key":"card:${ids.at(-1)}"`)
-    expect(columns).not.toContain(`"key":"card:${ids[8]}"`)
   })
 
   test('a message naming no card, or no column, changes nothing', async ($, on) => {
@@ -354,14 +364,6 @@ describe('dragging', () => {
     await ui.post({ type: 'move', id: 7, column: 'done' })
     await ui.post('garbage')
     expect((await $.tool.call({ tool: TOOL, action: 'list' })).text).toMatch(/To do \(1\)/)
-  })
-
-  test('rows a text and a row of buttons take', () => {
-    expect(textRows('one two three', 9)).toBe(2)
-    expect(textRows('a\nb', 40)).toBe(2)
-    expect(packedRows([16, 11, 8, 10], 56)).toBe(1)
-    expect(packedRows([16, 11, 8, 10], 30)).toBe(2)
-    expect(packedRows([], 30)).toBe(0)
   })
 
   test('layout: wrapped titles, cards a row apart, and what the pointer lands on', () => {
