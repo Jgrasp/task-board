@@ -1,9 +1,23 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { Engine, Mounted } from 'claude-code/testing'
+import type { Engine, MockClock, Mounted } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { Card } from '../types'
-import { CARD_LIMIT, addCard, boardText, planSteps, runBoardTool, syncTodos, taskCreated, taskUpdated } from '../hooks/lib'
+import {
+  CARD_LIMIT,
+  addCard,
+  applyLinks,
+  boardText,
+  forecastView,
+  hostOf,
+  parseLink,
+  planSteps,
+  runBoardTool,
+  syncTodos,
+  taggedCard,
+  taskCreated,
+  taskUpdated,
+} from '../hooks/lib'
 import { cardAt, columnAt, layout, wrap } from '../hooks/columns'
 import type { ColumnCard } from '../hooks/columns'
 
@@ -41,12 +55,11 @@ Trips recorded without a connection are lost.
 - Try it in airplane mode
 `
 
-type Fake = { opened: string[]; prompts: string[]; toasts: string[] }
+type Fake = { opened: string[]; prompts: string[]; toasts: string[]; clock: MockClock }
 
 /** Stands in for the session, the tools beneath the mod and the surface. */
 async function fake($: Engine, on: On): Promise<Fake> {
-  const state: Fake = { opened: [], prompts: [], toasts: [] }
-  mock.clock(on, { now: NOW })
+  const state: Fake = { opened: [], prompts: [], toasts: [], clock: mock.clock(on, { now: NOW }) }
   on('command.register', () => ({ value: { command: 'board' } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__task-board__${e.name}` } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -379,7 +392,137 @@ describe('lib', () => {
     expect(many.filter(card => card.column === 'done')).toHaveLength(5)
 
     expect(boardText([])).toBe('The board is empty.')
-    expect(runBoardTool([], { action: 'fly' }, NOW)).toMatchObject({ isError: true, text: 'action is list, add, move or remove.' })
+    expect(runBoardTool([], { action: 'fly' }, NOW)).toMatchObject({ isError: true, text: 'action is list, add, move, remove, link or forecast.' })
     expect(runBoardTool([], { action: 'add', title: 'x', column: 'later' }, NOW)).toMatchObject({ isError: true })
+  })
+})
+
+describe('sessions and deadline', () => {
+  const LINKS = '/home/me/.claude/task-board/links'
+
+  type World = { files: Map<string, { text: string; mtime: number }>; runs: string[][] }
+
+  function world(on: On, files: Record<string, unknown> = {}): World {
+    const state: World = {
+      files: new Map(Object.entries(files).map(([name, data]) => [`${LINKS}/${name}`, { text: JSON.stringify(data), mtime: 1 }])),
+      runs: [],
+    }
+    on('fs.list', ($, e) => ({
+      value: [...state.files.entries()]
+        .filter(([path]) => path.startsWith(`${e.path}/`))
+        .map(([path, file]) => ({ name: path.slice(e.path.length + 1), kind: 'file' as const, size: 1, mtimeMs: file.mtime, isLink: false })),
+    }))
+    on('fs.read', ($, e) => {
+      const file = state.files.get(e.path)
+      if (file === undefined) throw new Error(`ENOENT ${e.path}`)
+      return { value: file.text }
+    })
+    on('fs.write', ($, e) => {
+      state.files.set(e.path, { text: e.text, mtime: (state.files.get(e.path)?.mtime ?? 0) + 1 })
+      return { value: undefined }
+    })
+    on('process.run', ($, e) => {
+      state.runs.push([...e.argv])
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    on('session.id', () => ({ value: 'cli-child' }))
+    on('turn.complete', () => ({ text: '' }))
+
+    return state
+  }
+
+  test('a session started with a card tag reports to the card: working, then waiting', async ($, on) => {
+    mock.env(on, { HOME: '/home/me', CLAUDE_CODE_HOST_SESSION_ID: 'local_1111aaaa-2222-3333-4444-555566667777' })
+    const files = world(on)
+    await fake($, on)
+    await $.prompt.submit({ text: '[board:c9z1] Write the offline banner', wait: false, origin: { kind: 'composer' } })
+    expect(JSON.parse(files.files.get(`${LINKS}/c9z1.json`)?.text ?? '{}')).toEqual({
+      card: 'c9z1',
+      id: 'cli-child',
+      host: 'local_1111aaaa-2222-3333-4444-555566667777',
+      state: 'running',
+      at: NOW,
+    })
+    await $.turn.complete({ reason: 'answer', answer: 'Done', durationMs: 1, isAborted: false, turnId: 't1' })
+    expect(JSON.parse(files.files.get(`${LINKS}/c9z1.json`)?.text ?? '{}').state).toBe('idle')
+  })
+
+  test('the board follows a linked session and opens it', async ($, on) => {
+    mock.env(on, { HOME: '/home/me' })
+    const files = world(on)
+    const state = await fake($, on)
+    await $.tool.call({ tool: TOOL, action: 'add', title: 'Write the offline banner' })
+    const id = String((await $.tool.call({ tool: TOOL, action: 'list' })).text).match(/\[(c\w+)\]/)?.[1] ?? ''
+    const link = { card: id, id: 'cli-child', host: 'local_1111aaaa-2222-3333-4444-555566667777', state: 'running', at: NOW }
+    files.files.set(`${LINKS}/${id}.json`, { text: JSON.stringify(link), mtime: 1 })
+    const ui = await $.ui.mount(PANE)
+    expect(await ui.find({ type: 'Text', text: '✦' })).toBeDefined()
+
+    await state.clock.advance(5_000)
+    expect(await ui.find({ type: 'Text', text: '✦ ⇄' })).toBeDefined()
+    await openCard(ui, 'Write the offline banner')
+    expect(await texts(ui)).toEqual(expect.arrayContaining(['Doing · Added by Claude', 'Session · Working · active just now']))
+    await ui.press({ key: 'open-session' })
+    expect(files.runs).toEqual([['xdg-open', 'claude://claude.ai/epitaxy/local_1111aaaa-2222-3333-4444-555566667777']])
+
+    await ui.press({ key: 'unlink' })
+    expect(files.runs.at(-1)).toEqual(['rm', '-f', `${LINKS}/${id}.json`])
+    expect(await ui.find({ key: 'open-session' })).toBeUndefined()
+  })
+
+  const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as const
+
+  test('Claude links a card by hand and keeps a deadline banner', async ($, on) => {
+    mock.env(on, { HOME: '/home/me' })
+    const files = world(on)
+    on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' as const }] }))
+    const state = await fake($, on)
+    await $.tool.call({ tool: TOOL, action: 'add', title: 'Ship the release' })
+    const linked = await $.tool.call({ tool: TOOL, action: 'link', card: 'Ship the release', session: 'claude://claude.ai/epitaxy/local_aaaabbbb-cccc' })
+    expect(linked.text).toBe('Linked "Ship the release" to session local_aaaabbbb-cccc.')
+    expect([...files.files.keys()]).toEqual([expect.stringMatching(/\/c\w+\.json$/)])
+
+    const set = await $.tool.call({ tool: TOOL, action: 'forecast', deadline: '2026-10-16', finish: '2026-10-13', note: 'QA on Wednesday' })
+    expect(set.text).toBe('Deadline banner: on track, 3 days of margin (deadline 2026-10-16, finish 2026-10-13, note "QA on Wednesday").')
+    expect(state.opened).toEqual(['task-board'])
+    const ui = await $.ui.mount(PANE)
+    expect(await texts(ui)).toEqual(expect.arrayContaining([' ON TRACK ', '3 days of margin', 'Deadline Fri 16 Oct (in 10 days) · Finish Tue 13 Oct', 'QA on Wednesday']))
+    const prompt = await $.prompt.compose(COMPOSE)
+    expect(prompt.sections.at(-1)?.id).toBe('task-board:forecast')
+    expect(prompt.sections.at(-1)?.text).toContain('Deadline: 2026-10-16 (in 10 days). Your forecast finish: 2026-10-13, set on 2026-10-06.')
+
+    await $.tool.call({ tool: TOOL, action: 'forecast', finish: '2026-10-19' })
+    expect(await texts(ui)).toEqual(expect.arrayContaining([' LATE ', 'Finishing 3 days late']))
+    const bad = await $.tool.call({ tool: TOOL, action: 'forecast', finish: '19/10' })
+    expect(bad.isError).toBe(true)
+
+    await $.tool.call({ tool: TOOL, action: 'forecast', deadline: '', finish: '', note: '' })
+    expect(await ui.find({ key: 'forecast' })).toBeUndefined()
+    expect((await $.prompt.compose(COMPOSE)).sections.map(one => one.id)).toEqual(['intro'])
+  })
+
+  test('forecast tones, tags and links', () => {
+    const at = { note: '', tone: null, updatedAt: NOW } as const
+    expect(forecastView({ ...at, deadline: '2026-10-16', finish: '2026-10-15' }, '2026-10-06')).toMatchObject({ tone: 'tight', headline: '1 day of margin' })
+    expect(forecastView({ ...at, deadline: '2026-10-16', finish: '2026-10-16' }, '2026-10-06')).toMatchObject({ tone: 'tight', headline: 'No margin left' })
+    expect(forecastView({ ...at, deadline: '2026-10-16', finish: null }, '2026-10-06')).toMatchObject({ tone: 'info', badge: 'DEADLINE', headline: 'Due in 10 days' })
+    expect(forecastView({ ...at, deadline: '2026-10-01', finish: null }, '2026-10-06')).toMatchObject({ tone: 'late', headline: 'Deadline passed 5 days ago' })
+    expect(forecastView({ ...at, deadline: null, finish: null, note: 'Demo on Friday', tone: 'ok' }, '2026-10-06')).toMatchObject({ tone: 'ok', dates: '' })
+
+    expect(taggedCard('[board:c1x2] Do it')).toBe('c1x2')
+    expect(taggedCard('board c1x2')).toBeNull()
+    expect(hostOf('claude://claude.ai/epitaxy/local_626b34e5-82c4')).toBe('local_626b34e5-82c4')
+    expect(hostOf('a2c8724d-de77')).toBeNull()
+    expect(parseLink('{"host":"local_1"}')).toEqual({ id: null, host: 'local_1', state: null, at: 0 })
+    expect(parseLink('{"state":"idle"}')).toBeNull()
+    expect(parseLink('nope')).toBeNull()
+
+    const board = addCard([], { title: 'Ship it', source: 'you' }, NOW).cards
+    const id = board[0]?.id ?? ''
+    const linked = applyLinks(board, [{ card: id, link: { id: 's', host: null, state: 'idle', at: NOW } }])
+    expect(linked[0]).toMatchObject({ column: 'doing', session: { id: 's', state: 'idle' } })
+    expect(boardText(linked)).toContain('Ship it (session: waiting for you)')
+    expect(runBoardTool(linked, { action: 'link', card: id, session: 'nope' }, NOW).isError).toBe(true)
+    expect(runBoardTool(linked, { action: 'link', card: id, session: '' }, NOW).cards[0]?.session).toBeUndefined()
   })
 })

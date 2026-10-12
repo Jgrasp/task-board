@@ -1,4 +1,4 @@
-import type { Card, CardSource, Column } from '../types'
+import type { Card, CardSource, Column, Forecast, SessionLink, SessionState, Tone } from '../types'
 
 export const COLUMNS: readonly Column[] = ['todo', 'doing', 'done']
 
@@ -187,39 +187,84 @@ export function workPrompt(card: Card): string {
   return [`Work on this card from the task board: "${card.title}"`, ...(card.note === '' ? [] : ['', card.note])].join('\n')
 }
 
-/** The board as text, for the board tool's `list`: each column, each card with its id. */
-export function boardText(cards: readonly Card[]): string {
-  if (cards.length === 0) return 'The board is empty.'
+const STATE_NAME: Record<SessionState, string> = { running: 'Working', idle: 'Waiting for you', ended: 'Ended' }
 
-  return COLUMNS.map(column => {
+export function sessionText(link: SessionLink, now: number): string {
+  const state = link.state === null ? 'Linked' : STATE_NAME[link.state]
+
+  return link.at === 0 ? `Session · ${state}` : `Session · ${state} · active ${ago(link.at, now)}`
+}
+
+/** The board as text, for the board tool's `list`: each column, each card with its id. */
+export function boardText(cards: readonly Card[], forecast: Forecast | null = null, today = ''): string {
+  if (cards.length === 0 && forecast === null) return 'The board is empty.'
+  const columns = COLUMNS.map(column => {
     const inColumn = cards.filter(card => card.column === column)
-    return [`${COLUMN_NAME[column]} (${inColumn.length})`, ...inColumn.map(card => `- [${card.id}] ${card.title}`)].join('\n')
+    return [
+      `${COLUMN_NAME[column]} (${inColumn.length})`,
+      ...inColumn.map(card => {
+        const session = card.session === undefined ? '' : ` (session: ${card.session.state === null ? 'linked' : STATE_NAME[card.session.state].toLowerCase()})`
+        return `- [${card.id}] ${card.title}${session}`
+      }),
+    ].join('\n')
   }).join('\n\n')
+
+  return forecast === null ? columns : `${forecastText(forecast, today)}\n\n${columns}`
 }
 
 /** What the board tool takes, as the model sends it: checked here, never trusted. */
-export type BoardToolInput = { action?: unknown; title?: unknown; note?: unknown; card?: unknown; column?: unknown }
+export type BoardToolInput = {
+  action?: unknown
+  title?: unknown
+  note?: unknown
+  card?: unknown
+  column?: unknown
+  session?: unknown
+  deadline?: unknown
+  finish?: unknown
+  tone?: unknown
+}
 
 export const BOARD_TOOL_SCHEMA = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['list', 'add', 'move', 'remove'], description: 'What to do.' },
+    action: { type: 'string', enum: ['list', 'add', 'move', 'remove', 'link', 'forecast'], description: 'What to do.' },
     title: { type: 'string', description: 'add: the card, a short imperative ("Add an offline banner").' },
-    note: { type: 'string', description: 'add: optional detail: why, where, what done means.' },
-    card: { type: 'string', description: 'move, remove: the card id from list, or its exact title.' },
+    note: {
+      type: 'string',
+      description: 'add: optional detail: why, where, what done means. forecast: a short message under the banner (what drives the date); empty clears it.',
+    },
+    card: { type: 'string', description: 'move, remove, link: the card id from list, or its exact title.' },
     column: { type: 'string', enum: ['todo', 'doing', 'done'], description: 'add (default todo), move: the column.' },
+    session: {
+      type: 'string',
+      description: "link: the session's id in the desktop app (local_…) or its claude:// link; empty unlinks the card.",
+    },
+    deadline: { type: 'string', description: 'forecast: the date the work is due, YYYY-MM-DD; empty clears it.' },
+    finish: { type: 'string', description: 'forecast: when you expect the work to be done, YYYY-MM-DD; empty clears it.' },
+    tone: {
+      type: 'string',
+      enum: ['ok', 'tight', 'late', 'info'],
+      description: "forecast: the banner's color, only to override the one the dates give.",
+    },
   },
   required: ['action'],
 } as const
 
 export const BOARD_TOOL_DESCRIPTION = [
-  "The task board in the person's side pane: To do, Doing and Done columns of cards.",
+  "The task board in the person's side pane: To do, Doing and Done columns of cards, under a deadline banner.",
   'Use it when the person asks to put something on the board, move a card or mark one done, and to note follow-up work you notice but are not doing now.',
   'Your own to-do list and approved plans already appear on the board by themselves: do not add their items again.',
-  'Actions: list (the cards and their ids), add (title, optional note and column), move (card, column), remove (card).',
+  'Actions: list (the cards and their ids), add (title, optional note and column), move (card, column), remove (card),',
+  'link (card, session: links a card to the session working on it),',
+  'forecast (deadline, finish, note, tone: the banner; the dates set its color; keep finish current as the work goes; with no deadline, a note alone shows as a message).',
+  'When you write a prompt for the person to run in a new session on a card, start it with the card\'s tag, [board:<card id>]:',
+  'the board links that session to the card and follows it.',
 ].join(' ')
 
 const isColumn = (value: unknown): value is Column => value === 'todo' || value === 'doing' || value === 'done'
+
+const isTone = (value: unknown): value is Tone => value === 'ok' || value === 'tight' || value === 'late' || value === 'info'
 
 /** Finds a card by its id, else by its title (exact, ignoring case). */
 function findCard(cards: readonly Card[], key: string): Card | undefined {
@@ -228,16 +273,27 @@ function findCard(cards: readonly Card[], key: string): Card | undefined {
   return cards.find(card => card.id === key.trim()) ?? cards.find(card => card.title.toLowerCase() === wanted)
 }
 
+function dayField(value: unknown, current: string | null): string | null | false {
+  if (value === undefined) return current
+  if (value === null || value === '') return null
+
+  return typeof value === 'string' && isDay(value.trim()) ? value.trim() : false
+}
+
+export type BoardToolOutcome = {
+  cards: Card[]
+  text: string
+  isError?: true
+  forecast?: Forecast | null
+  link?: { card: string; host: string | null }
+}
+
 /** Runs one board tool call: the board after it, and what the model reads back. */
-export function runBoardTool(
-  cards: readonly Card[],
-  input: BoardToolInput,
-  at: number,
-): { cards: Card[]; text: string; isError?: true } {
+export function runBoardTool(cards: readonly Card[], input: BoardToolInput, at: number, forecast: Forecast | null = null): BoardToolOutcome {
   const fail = (text: string) => ({ cards: [...cards], text, isError: true as const })
   switch (input.action) {
     case 'list':
-      return { cards: [...cards], text: boardText(cards) }
+      return { cards: [...cards], text: boardText(cards, forecast, todayOf(at)) }
     case 'add': {
       if (typeof input.title !== 'string' || input.title.trim() === '') return fail('add needs a title.')
       if (input.column !== undefined && !isColumn(input.column)) return fail('column is todo, doing or done.')
@@ -268,7 +324,181 @@ export function runBoardTool(
       if (card === undefined) return fail(`No card "${input.card}". Use list to see the cards and their ids.`)
       return { cards: removeCard(cards, card.id), text: `Removed "${card.title}".` }
     }
+    case 'link': {
+      if (typeof input.card !== 'string') return fail('link needs a card: its id or title.')
+      const card = findCard(cards, input.card)
+      if (card === undefined) return fail(`No card "${input.card}". Use list to see the cards and their ids.`)
+      if (typeof input.session !== 'string') return fail('link needs a session: its app id (local_…) or claude:// link, or empty to unlink.')
+      if (input.session.trim() === '') {
+        return { cards: linkCard(cards, card.id, null), text: `Unlinked "${card.title}" from its session.`, link: { card: card.id, host: null } }
+      }
+      const host = hostOf(input.session)
+      if (host === null) return fail("session is the session's id in the desktop app (local_…) or its claude:// link.")
+      return {
+        cards: linkCard(cards, card.id, { id: null, host, state: null, at: 0 }),
+        text: `Linked "${card.title}" to session ${host}.`,
+        link: { card: card.id, host },
+      }
+    }
+    case 'forecast': {
+      const deadline = dayField(input.deadline, forecast?.deadline ?? null)
+      if (deadline === false) return fail('deadline is a date, YYYY-MM-DD, or empty to clear it.')
+      const finish = dayField(input.finish, forecast?.finish ?? null)
+      if (finish === false) return fail('finish is a date, YYYY-MM-DD, or empty to clear it.')
+      if (input.tone !== undefined && input.tone !== '' && !isTone(input.tone)) return fail('tone is ok, tight, late or info.')
+      const note = typeof input.note === 'string' ? clip(input.note.replace(/\s+/g, ' ').trim(), 300) : (forecast?.note ?? '')
+      const tone = input.tone === undefined ? (forecast?.tone ?? null) : isTone(input.tone) ? input.tone : null
+      if (deadline === null && finish === null && note === '') return { cards: [...cards], text: 'Cleared the deadline banner.', forecast: null }
+      const next: Forecast = { deadline, finish, note, tone, updatedAt: at }
+      return { cards: [...cards], text: forecastText(next, todayOf(at)), forecast: next }
+    }
     default:
-      return fail('action is list, add, move or remove.')
+      return fail('action is list, add, move, remove, link or forecast.')
   }
+}
+
+export function cardTag(id: string): string {
+  return `[board:${id}]`
+}
+
+export function taggedCard(text: string): string | null {
+  return text.match(/\[board:(c[0-9a-z]+)\]/)?.[1] ?? null
+}
+
+export function hostOf(text: string): string | null {
+  return text.match(/local_[0-9a-f-]{8,}/i)?.[0] ?? null
+}
+
+export function linkCard(cards: readonly Card[], id: string, link: SessionLink | null): Card[] {
+  const card = cards.find(one => one.id === id)
+  if (card === undefined) return [...cards]
+  const { session: _, ...rest } = card
+  const linked = cards.map(one => (one.id === id ? (link === null ? rest : { ...rest, session: link }) : one))
+
+  return link !== null && card.session === undefined && card.column === 'todo' ? moveCard(linked, id, 'doing') : linked
+}
+
+export function parseLink(text: string): SessionLink | null {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof data !== 'object' || data === null) return null
+  const { id, host, state, at } = data as Record<string, unknown>
+  if (typeof id !== 'string' && typeof host !== 'string') return null
+
+  return {
+    id: typeof id === 'string' ? id : null,
+    host: typeof host === 'string' ? host : null,
+    state: state === 'running' || state === 'idle' || state === 'ended' ? state : null,
+    at: typeof at === 'number' ? at : 0,
+  }
+}
+
+export function applyLinks(cards: readonly Card[], links: ReadonlyArray<{ card: string; link: SessionLink }>): Card[] {
+  return links.reduce<Card[]>((board, { card, link }) => {
+    const current = board.find(one => one.id === card)
+    return current === undefined || JSON.stringify(current.session) === JSON.stringify(link) ? board : linkCard(board, card, link)
+  }, [...cards])
+}
+
+const DAY = 86_400_000
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+export function todayOf(at: number): string {
+  return new Date(at - new Date(at).getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+}
+
+export function isDay(text: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false
+  const at = Date.parse(`${text}T00:00:00Z`)
+
+  return !Number.isNaN(at) && new Date(at).toISOString().slice(0, 10) === text
+}
+
+const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY)
+
+const days = (n: number) => (n === 1 ? '1 day' : `${n} days`)
+
+export function dayName(day: string): string {
+  const date = new Date(`${day}T00:00:00Z`)
+
+  return `${WEEKDAY[date.getUTCDay()]} ${date.getUTCDate()} ${MONTH[date.getUTCMonth()]}`
+}
+
+function fromToday(today: string, day: string): string {
+  const n = daysBetween(today, day)
+  if (n === 0) return 'today'
+  if (n === 1) return 'tomorrow'
+
+  return n > 0 ? `in ${days(n)}` : `${days(-n)} ago`
+}
+
+export function ago(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+
+  return hours < 24 ? `${hours} h ago` : `${days(Math.floor(hours / 24))} ago`
+}
+
+export function toneOf(forecast: Forecast, today: string): Tone {
+  if (forecast.tone !== null) return forecast.tone
+  if (forecast.deadline === null) return 'info'
+  if (daysBetween(today, forecast.deadline) < 0) return 'late'
+  if (forecast.finish === null) return 'info'
+  const margin = daysBetween(forecast.finish, forecast.deadline)
+
+  return margin < 0 ? 'late' : margin <= 1 ? 'tight' : 'ok'
+}
+
+export type ForecastView = { tone: Tone; badge: string; headline: string; dates: string }
+
+function headlineOf(forecast: Forecast, today: string): string {
+  if (forecast.deadline === null) return ''
+  const left = daysBetween(today, forecast.deadline)
+  if (left < 0) return `Deadline passed ${days(-left)} ago`
+  if (forecast.finish === null) return left === 0 ? 'Due today' : `Due ${fromToday(today, forecast.deadline)}`
+  const margin = daysBetween(forecast.finish, forecast.deadline)
+  if (margin < 0) return `Finishing ${days(-margin)} late`
+
+  return margin === 0 ? 'No margin left' : `${days(margin)} of margin`
+}
+
+export function forecastView(forecast: Forecast, today: string): ForecastView {
+  const tone = toneOf(forecast, today)
+  const badge = { ok: 'ON TRACK', tight: 'TIGHT', late: 'LATE', info: forecast.deadline === null ? 'NOTE' : 'DEADLINE' }[tone]
+  const dates = [
+    forecast.deadline === null ? null : `Deadline ${dayName(forecast.deadline)} (${fromToday(today, forecast.deadline)})`,
+    forecast.finish === null ? null : `Finish ${dayName(forecast.finish)}`,
+  ].filter((part): part is string => part !== null)
+
+  return { tone, badge, headline: headlineOf(forecast, today), dates: dates.join(' · ') }
+}
+
+export function forecastText(forecast: Forecast, today: string): string {
+  const view = forecastView(forecast, today)
+  const facts = [
+    forecast.deadline === null ? null : `deadline ${forecast.deadline}`,
+    forecast.finish === null ? null : `finish ${forecast.finish}`,
+    forecast.note === '' ? null : `note "${forecast.note}"`,
+  ].filter((fact): fact is string => fact !== null)
+
+  return `Deadline banner: ${view.badge.toLowerCase()}${view.headline === '' ? '' : `, ${view.headline.toLowerCase()}`} (${facts.join(', ')}).`
+}
+
+export function forecastPrompt(forecast: Forecast, today: string): string {
+  return [
+    "The task board in the person's side pane shows a deadline banner that you keep current with the board tool's forecast action.",
+    `Today is ${today}.`,
+    forecast.deadline === null ? 'No deadline is set.' : `Deadline: ${forecast.deadline} (${fromToday(today, forecast.deadline)}).`,
+    forecast.finish === null
+      ? 'You have not forecast a finish date yet.'
+      : `Your forecast finish: ${forecast.finish}, set on ${todayOf(forecast.updatedAt)}.`,
+    'When your progress changes when you expect to finish, update finish and say what drives it in a short note.',
+  ].join(' ')
 }
