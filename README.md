@@ -19,7 +19,7 @@ A To do / Doing / Done board in a side pane, filled as Claude works, and by you.
 
 - **Long boards:** in the desktop app and the terminal, the columns scroll with the wheel inside the board, under its header, and an open card's details stay pinned below them.
 
-✦ marks Claude's cards, ◆ a plan's, ≡ one with a description. `/board` opens the pane at any time. The board belongs to the session: a new session starts with an empty one. Done shows its latest five cards; a board keeps at most 80, dropping the oldest done ones first.
+✦ marks Claude's cards, ◆ a plan's, ≡ one with a description. `/board` opens the pane at any time. The board belongs to the session: a new session starts with an empty one. Done shows its latest cards first. Nothing is ever dropped from the board by itself.
 
 Claude's to-do list is the truth for its own cards: when Claude updates the list, its cards follow, even ones you moved. Cards you or the board tool added are yours to move.
 

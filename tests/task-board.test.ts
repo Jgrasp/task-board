@@ -4,7 +4,6 @@ import type { On } from 'claude-code'
 
 import type { Card } from '../types'
 import {
-  CARD_LIMIT,
   addCard,
   applyLinks,
   boardText,
@@ -404,16 +403,16 @@ describe('lib', () => {
     expect(syncTodos(synced, [], NOW).map(card => card.title)).toEqual(['My card'])
   })
 
-  test('task tools, the card limit and the board as text', () => {
+  test('task tools, no card limit and the board as text', () => {
     let board: Card[] = taskCreated([], { id: '7', subject: 'Ship it' }, NOW)
     board = taskUpdated(board, { taskId: '7', status: 'completed', subject: 'Ship 2.4' })
     expect(board.map(card => [card.title, card.column])).toEqual([['Ship 2.4', 'done']])
     expect(taskUpdated(board, { taskId: 'missing', status: 'deleted' })).toEqual(board)
 
     let many: Card[] = []
-    for (let n = 0; n < CARD_LIMIT + 5; n += 1) many = addCard(many, { title: `Card ${n}`, source: 'you', column: n < 10 ? 'done' : 'todo' }, NOW).cards
-    expect(many).toHaveLength(CARD_LIMIT)
-    expect(many.filter(card => card.column === 'done')).toHaveLength(5)
+    for (let n = 0; n < 200; n += 1) many = addCard(many, { title: `Card ${n}`, source: 'you', column: n < 10 ? 'done' : 'todo' }, NOW).cards
+    expect(many).toHaveLength(200)
+    expect(many.filter(card => card.column === 'done')).toHaveLength(10)
 
     expect(boardText([])).toBe('The board is empty.')
     expect(runBoardTool([], { action: 'fly' }, NOW)).toMatchObject({ isError: true, text: 'action is list, add, move, remove, link or banner.' })

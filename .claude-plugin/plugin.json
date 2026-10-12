@@ -1,6 +1,6 @@
 {
   "name": "task-board",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A To do / Doing / Done board in a side pane, filled by Claude's to-do list, approved plans and a board tool, plus your own cards",
   "author": {
     "name": "Quentin Briais"

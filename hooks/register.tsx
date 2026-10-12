@@ -7,7 +7,6 @@ import {
   BOARD_TOOL_SCHEMA,
   COLUMNS,
   COLUMN_NAME,
-  DONE_SHOWN,
   addCard,
   applyLinks,
   bannerPrompt,
@@ -478,7 +477,7 @@ export const register: Register = on => {
     // The cards as the draggable columns draw them, column by column, Done's latest first.
     const shownIn = (column: Column) => {
       const inColumn = board.filter(card => card.column === column)
-      return column === 'done' ? inColumn.slice(-DONE_SHOWN).reverse() : inColumn
+      return column === 'done' ? [...inColumn].reverse() : inColumn
     }
     const columnsProps: ColumnsProps = {
       cards: COLUMNS.flatMap((column, index) =>
@@ -573,8 +572,7 @@ export const register: Register = on => {
 
     const columnView = (column: Column) => {
       const inColumn = board.filter(card => card.column === column)
-      // Done keeps the latest few: the column that only grows.
-      const shown = column === 'done' ? inColumn.slice(-DONE_SHOWN).reverse() : inColumn
+      const shown = column === 'done' ? [...inColumn].reverse() : inColumn
       return (
         <Box key={`column:${column}`} flexDirection="column" width="33%" flexShrink={1} rowGap={1}>
           <Box flexDirection="row" columnGap={1}>
@@ -590,7 +588,6 @@ export const register: Register = on => {
               <Text dimColor>No cards</Text>
             </Box>
           )}
-          {inColumn.length > shown.length && <Text dimColor>{`+${inColumn.length - shown.length} earlier`}</Text>}
         </Box>
       )
     }

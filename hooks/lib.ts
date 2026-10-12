@@ -4,12 +4,6 @@ export const COLUMNS: readonly Column[] = ['todo', 'doing', 'done']
 
 export const COLUMN_NAME: Record<Column, string> = { todo: 'To do', doing: 'Doing', done: 'Done' }
 
-/** How many Done cards the column shows; the rest are counted. */
-export const DONE_SHOWN = 5
-
-/** The most cards a board keeps: the oldest Done ones go first. */
-export const CARD_LIMIT = 80
-
 const SOURCE_NAME: Record<CardSource, string> = {
   you: 'Added by you',
   todo: "From Claude's to-do list",
@@ -59,18 +53,7 @@ export function addCard(
     createdAt: at,
   }
 
-  return { cards: trim([...cards, card]), card }
-}
-
-/** At most `CARD_LIMIT` cards: the oldest Done ones go first. */
-function trim(cards: Card[]): Card[] {
-  const out = [...cards]
-  while (out.length > CARD_LIMIT) {
-    const at = out.findIndex(card => card.column === 'done')
-    out.splice(at === -1 ? 0 : at, 1)
-  }
-
-  return out
+  return { cards: [...cards, card], card }
 }
 
 /** The board with card `id` in `column`, moved to the end of it. */
