@@ -511,8 +511,8 @@ describe('sessions and deadline', () => {
 
     expect(taggedCard('[board:c1x2] Do it')).toBe('c1x2')
     expect(taggedCard('board c1x2')).toBeNull()
-    expect(hostOf('claude://claude.ai/epitaxy/local_626b34e5-82c4')).toBe('local_626b34e5-82c4')
-    expect(hostOf('a2c8724d-de77')).toBeNull()
+    expect(hostOf('claude://claude.ai/epitaxy/local_0000aaaa-1111')).toBe('local_0000aaaa-1111')
+    expect(hostOf('9f8e7d6c-5b4a')).toBeNull()
     expect(parseLink('{"host":"local_1"}')).toEqual({ id: null, host: 'local_1', state: null, at: 0 })
     expect(parseLink('{"state":"idle"}')).toBeNull()
     expect(parseLink('nope')).toBeNull()
