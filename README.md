@@ -24,7 +24,8 @@ Claude's to-do list is the truth for its own cards: when Claude updates the list
 ## Install
 
 ```
-/plugin marketplace add MarcoCarnevali/claude-code-mods
-/plugin install task-board@marco-mods
+/plugin install task-board@jgrasp-marketplace
 /reload-plugins
 ```
+
+Fork of [MarcoCarnevali/claude-code-mods](https://github.com/MarcoCarnevali/claude-code-mods), MIT.

@@ -3,10 +3,9 @@
   "version": "0.2.0",
   "description": "A To do / Doing / Done board in a side pane, filled by Claude's to-do list, approved plans and a board tool, plus your own cards",
   "author": {
-    "name": "Marco Carnevali",
-    "url": "https://github.com/MarcoCarnevali"
+    "name": "Quentin Briais"
   },
-  "repository": "https://github.com/MarcoCarnevali/claude-code-mods",
+  "repository": "https://github.com/Jgrasp/task-board",
   "license": "MIT",
   "keywords": [
     "mod",
