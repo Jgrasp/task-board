@@ -337,7 +337,7 @@ describe('dragging', () => {
     await ui.resize({ columns: 60, rows: 37, in: 'columns' })
     expect(JSON.stringify(await ui.drawn())).toContain('"offset":0},"width":"100%","height":37')
 
-    await ui.post({ type: 'open', id: ids.at(-1) })
+    await ui.post({ type: 'open', id: ids.at(-1) ?? '' })
     expect(await ui.find({ type: 'Text', text: 'To do · Added by Claude' })).toBeDefined()
     expect(JSON.stringify(await ui.drawn())).toContain('"offset":43},"width":"100%","height":27')
     await ui.resize({ columns: 60, rows: 27, in: 'columns' })
