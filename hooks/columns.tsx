@@ -178,6 +178,7 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
           borderColor={ACCENT}
           backgroundColor={GHOST_FILL}
           paddingX={1}
+          height={carried.lines.length + 3}
         >
           {carried.lines.map(line => (
             <Text bold color={GHOST_INK} wrap="truncate-end">
@@ -195,7 +196,7 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
         const placedCards = at.cards.filter(placed => placed.column === column)
         return (
           <Box key={`column:${column}`} flexDirection="column" width={at.columnWidth}>
-            <Box flexDirection="row" columnGap={1}>
+            <Box flexDirection="row" columnGap={1} height={1}>
               <Text {...(dot === null ? { dimColor: true } : { color: dot })}>●</Text>
               <Text bold {...(isTarget ? { color: ACCENT } : {})}>
                 {props.names[column] ?? ''}
@@ -217,6 +218,7 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
                   {...(isCarried || color === null ? { borderDimColor: true } : { borderColor: color })}
                   paddingX={1}
                   marginBottom={1}
+                  height={placed.lines.length + 3}
                 >
                   {placed.lines.map(line => (
                     <Text wrap="truncate-end" dimColor={card.isDone || isCarried}>
@@ -230,12 +232,12 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
               )
             })}
             {isTarget && (
-              <Box borderStyle="round" borderColor={ACCENT} paddingX={1}>
+              <Box borderStyle="round" borderColor={ACCENT} paddingX={1} height={3}>
                 <Text color={ACCENT}>Drop here</Text>
               </Box>
             )}
             {(props.counts[column] ?? 0) === 0 && !isTarget && (
-              <Box borderStyle="round" borderDimColor paddingX={1}>
+              <Box borderStyle="round" borderDimColor paddingX={1} height={3}>
                 <Text dimColor>No cards</Text>
               </Box>
             )}
