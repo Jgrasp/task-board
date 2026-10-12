@@ -17,7 +17,7 @@ import {
   taskCreated,
   taskUpdated,
 } from '../hooks/lib'
-import { cardAt, columnAt, layout, wrap } from '../hooks/columns'
+import { cardAt, columnAt, layout, packedRows, textRows, wrap } from '../hooks/columns'
 import type { ColumnCard } from '../hooks/columns'
 
 const NOW = Date.parse('2026-10-06T10:00:00Z')
@@ -329,6 +329,23 @@ describe('dragging', () => {
     expect((await $.tool.call({ tool: TOOL, action: 'list' })).text).toMatch(/Doing \(1\)\n- \[c\w+\] Drag me/)
   })
 
+  test('with many cards the columns scroll inside the pane, and an open card keeps its details in view', async ($, on) => {
+    await fake($, on)
+    for (let n = 1; n <= 14; n += 1) await $.tool.call({ tool: TOOL, action: 'add', title: `Task number ${n}` })
+    const ids = [...((await $.tool.call({ tool: TOOL, action: 'list' })).text ?? '').matchAll(/\[(c\w+)\]/g)].map(match => match[1] ?? '')
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.resize({ columns: 60, rows: 37, in: 'columns' })
+    expect(JSON.stringify(await ui.drawn())).toContain('"offset":0},"width":"100%","height":37')
+
+    await ui.post({ type: 'open', id: ids.at(-1) })
+    expect(await ui.find({ type: 'Text', text: 'To do · Added by Claude' })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('"offset":43},"width":"100%","height":27')
+    await ui.resize({ columns: 60, rows: 27, in: 'columns' })
+    const columns = JSON.stringify(await ui.drawn({ in: 'columns' }))
+    expect(columns).toMatch(new RegExp(`"key":"card:${ids.at(-1)}","position":"absolute","top":23`))
+    expect(columns).not.toContain(`"key":"card:${ids[0]}"`)
+  })
+
   test('a message naming no card, or no column, changes nothing', async ($, on) => {
     await fake($, on)
     await $.tool.call({ tool: TOOL, action: 'add', title: 'Keep me' })
@@ -337,6 +354,14 @@ describe('dragging', () => {
     await ui.post({ type: 'move', id: 7, column: 'done' })
     await ui.post('garbage')
     expect((await $.tool.call({ tool: TOOL, action: 'list' })).text).toMatch(/To do \(1\)/)
+  })
+
+  test('rows a text and a row of buttons take', () => {
+    expect(textRows('one two three', 9)).toBe(2)
+    expect(textRows('a\nb', 40)).toBe(2)
+    expect(packedRows([16, 11, 8, 10], 56)).toBe(1)
+    expect(packedRows([16, 11, 8, 10], 30)).toBe(2)
+    expect(packedRows([], 30)).toBe(0)
   })
 
   test('layout: wrapped titles, cards a row apart, and what the pointer lands on', () => {

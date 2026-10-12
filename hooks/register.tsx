@@ -30,7 +30,7 @@ import {
   workPrompt,
 } from './lib'
 import type { BoardToolInput } from './lib'
-import { columnsHeightFor, wrap } from './columns'
+import { columnsHeightFor, layout, packedRows, textRows, wrap } from './columns'
 import type { ColumnsMessage, ColumnsProps } from './columns'
 
 const PANE = 'task-board'
@@ -48,17 +48,29 @@ const HEADER_ROWS = 3
 /** Cells in the progress bar. */
 const BAR = 12
 const POLL_MS = 5_000
+const COMPOSER_ROWS = 12
+const MIN_COLUMNS_ROWS = 8
 
 const cards = atom({ plugin: 'task-board', key: 'cards' } as const, [])
 const selected = atom({ plugin: 'task-board', key: 'selected' } as const, null)
 const composer = atom({ plugin: 'task-board', key: 'composer' } as const, null)
 const working = atom({ plugin: 'task-board', key: 'working' } as const, null)
 const banner = atom({ plugin: 'task-board', key: 'banner' } as const, null)
+const scrolled = atom({ plugin: 'task-board', key: 'scrolled' } as const, 0)
 const linkedTo = atom({ plugin: 'task-board', key: 'linkedTo' } as const, null)
 
 /** The board's full tool name, as Claude calls it: `mcp__task-board__board`, else what registering answered. */
 let toolName = `mcp__task-board__${TOOL}`
 const seen = new Map<string, number>()
+let frame: {
+  top: number
+  height: number
+  max: number
+  window: number
+  space: number
+  placed: ReadonlyArray<{ id: string; top: number; bottom: number }>
+  detailsRows: (id: string) => number
+} | null = null
 
 /**
  * Writes the board; the first cards Claude puts on an empty board open the
@@ -121,6 +133,19 @@ async function saveComposer($: EngineInterface): Promise<void> {
 }
 
 async function select($: EngineInterface, id: string | null): Promise<void> {
+  const opening = id !== null && (await read($, selected)) !== id
+  if (opening && frame !== null) {
+    const at = frame
+    const card = at.placed.find(one => one.id === id)
+    const height = Math.max(MIN_COLUMNS_ROWS, at.space - at.detailsRows(id))
+    if (card !== undefined) {
+      await update($, scrolled, current => {
+        const offset = Math.max(0, current)
+        if (card.bottom >= offset + height) return card.bottom - height + 1
+        return card.top - 1 < offset ? card.top - 1 : offset
+      })
+    }
+  }
   await update($, selected, current => (current === id ? null : id))
 }
 
@@ -377,6 +402,17 @@ export const register: Register = on => {
     return {}
   })
 
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const at = frame
+    if (at === null || at.max === 0 || e.origin.kind !== 'person') return next(e)
+    if (e.pointer !== undefined && e.pointer.row + at.window >= at.top + at.height) return next(e)
+    const current = Math.min(at.max, Math.max(0, await read($, scrolled)))
+    const target = Math.min(at.max, Math.max(0, current + e.by * 2))
+    if (target !== current) await update($, scrolled, () => target)
+
+    return {}
+  })
+
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     // The turn Work on it started has ended: the card is Claude's no longer.
@@ -459,10 +495,9 @@ export const register: Register = on => {
       names: COLUMNS.map(column => COLUMN_NAME[column]),
       counts: COLUMNS.map(column => board.filter(card => card.column === column).length),
       dots: COLUMNS.map(column => DOT[column].color ?? null),
+      offset: 0,
     }
 
-    // The columns fill the pane below the header, so a card can be dragged anywhere under them; with a
-    // card's details or the composer open, they keep their own height and those sit right under them.
     const bannerWidth = Math.max(10, e.props.bodyColumns - 4)
     const bannerRows =
       message === null
@@ -490,9 +525,51 @@ export const register: Register = on => {
         </Box>
       )
 
+    const inner = Math.max(10, e.props.bodyColumns - 4)
+    const detailsRows = (id: string) => {
+      const card = board.find(one => one.id === id)
+      if (card === undefined) return 0
+      const left = neighbour(card.column, -1)
+      const right = neighbour(card.column, 1)
+      const labels = [
+        card.session?.host != null ? '↗ Open session' : null,
+        card.column === 'done' ? null : card.id === busy ? 'Claude is on it' : '▶ Work on it',
+        left === null ? null : `‹ ${COLUMN_NAME[left]}`,
+        right === null ? null : `${COLUMN_NAME[right]} ›`,
+        'Edit',
+        card.session === undefined ? null : 'Unlink',
+        'Delete',
+      ].filter((label): label is string => label !== null)
+      const session = card.session === undefined ? `To follow a session on this card, start its first prompt with ${cardTag(card.id)}` : sessionText(card.session, now)
+      return (
+        6 +
+        textRows(card.title, inner - 6) +
+        textRows(session, inner) +
+        (card.note === '' ? 0 : 1 + textRows(card.note, inner)) +
+        packedRows(
+          labels.map(label => label.length + 4),
+          inner,
+        )
+      )
+    }
     const contentRows = columnsHeightFor(columnsProps.cards, e.props.bodyColumns)
-    const fillRows = e.props.scroll.bodyRows - HEADER_ROWS - bannerRows
-    const columnsHeight = open !== undefined || writing !== null ? contentRows : Math.max(contentRows, fillRows)
+    const space = e.props.scroll.bodyRows - HEADER_ROWS - bannerRows
+    const panelRows = (open === undefined ? 0 : detailsRows(open.id)) + (writing !== null && Input !== undefined ? COMPOSER_ROWS : 0)
+    const room = Math.max(MIN_COLUMNS_ROWS, space - panelRows)
+    const columnsHeight = panelRows > 0 ? Math.min(contentRows, room) : room
+    const maxOffset = Math.max(0, contentRows - columnsHeight)
+    const columns = { ...columnsProps, offset: Math.min(maxOffset, Math.max(0, await read($, scrolled))) }
+    if (Client !== undefined && board.length > 0) {
+      frame = {
+        top: bannerRows + HEADER_ROWS - 1,
+        height: columnsHeight,
+        max: maxOffset,
+        window: e.props.scroll.offset,
+        space,
+        placed: layout(columns.cards, e.props.bodyColumns).cards,
+        detailsRows,
+      }
+    }
 
     const columnView = (column: Column) => {
       const inColumn = board.filter(card => card.column === column)
@@ -614,7 +691,7 @@ export const register: Register = on => {
             {header}
             {Client !== undefined ? (
               // Dragging needs the pointer, which only a Client hears: it draws the columns itself.
-              <Client key="columns" module="./columns.tsx" props={columnsProps} width="100%" height={columnsHeight} />
+              <Client key="columns" module="./columns.tsx" props={columns} width="100%" height={columnsHeight} />
             ) : (
               <Box flexDirection="row" columnGap={1}>
                 {COLUMNS.map(columnView)}
