@@ -19,6 +19,8 @@ A To do / Doing / Done board in a side pane, filled as Claude works, and by you.
 
 - **Floating details:** in the desktop app and the terminal, a card's details float over the board right under the card you clicked, and the composer right under the header, so their buttons show where you are. Cards are outlined blue in To do, orange in Doing and green in Done.
 
+- **Board button:** while the pane is closed, a **▦ Board** button above the prompt, with the board's progress, opens it, also while Claude is working.
+
 ✦ marks Claude's cards, ◆ a plan's, ≡ one with a description. `/board` opens the pane at any time. The board belongs to the session: a new session starts with an empty one. Done shows its latest cards first. Nothing is ever dropped from the board by itself.
 
 Claude's to-do list is the truth for its own cards: when Claude updates the list, its cards follow, even ones you moved. Cards you or the board tool added are yours to move.

@@ -53,12 +53,16 @@ Trips recorded without a connection are lost.
 - Try it in airplane mode
 `
 
-type Fake = { opened: string[]; closed: string[]; prompts: string[]; toasts: string[]; clock: MockClock }
+type Fake = { opened: string[]; closed: string[]; prompts: string[]; toasts: string[]; commands: Array<{ name: string; immediate?: true }>; clock: MockClock }
 
 /** Stands in for the session, the tools beneath the mod and the surface. */
 async function fake($: Engine, on: On): Promise<Fake> {
-  const state: Fake = { opened: [], closed: [], prompts: [], toasts: [], clock: mock.clock(on, { now: NOW }) }
-  on('command.register', () => ({ value: { command: 'board' } }))
+  const state: Fake = { opened: [], closed: [], prompts: [], toasts: [], commands: [], clock: mock.clock(on, { now: NOW }) }
+  on('command.register', ($, e) => {
+    state.commands.push({ name: e.name, ...(e.immediate === true ? { immediate: true as const } : {}) })
+
+    return { value: { command: e.name } }
+  })
   on('tool.register', ($, e) => ({ value: { tool: `mcp__task-board__${e.name}` } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.open', ($, e) => {
@@ -267,11 +271,37 @@ describe('pane', () => {
     expect((await ui.find({ type: 'Button', text: 'Close' }))).toBeUndefined()
   })
 
+  test('a Board button above the prompt opens the pane while it is closed, even while Claude works', async ($, on) => {
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({}))
+    const state = await fake($, on)
+    const BAND = {
+      plugin: 'task-board',
+      component: 'AbovePrompt',
+      requestId: 'band',
+      surface: 'desktop',
+      props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+    } as const
+    const band = await $.ui.mount(BAND)
+    expect(await band.find({ key: 'open-board' })).toBeUndefined()
+
+    const ui = await $.ui.mount(PANE)
+    await newCard(ui, 'Show me')
+    expect(state.opened).toEqual([])
+    expect((await band.find({ key: 'open-board' }))?.text).toBe('▦ Board')
+    expect(await band.find({ type: 'Text', text: '0 of 1 done' })).toBeDefined()
+
+    await band.press({ key: 'open-board' })
+    expect(state.opened).toEqual(['task-board'])
+    expect(await band.find({ key: 'open-board' })).toBeUndefined()
+  })
+
   test('/board opens the pane', async ($, on) => {
     const state = await fake($, on)
     const ran = await $.command.run({ command: 'board', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
     expect(ran.text).toBe('Board opened.')
     expect(state.opened).toEqual(['task-board'])
+    // It runs at once even while a turn is in flight.
+    expect(state.commands).toEqual([{ name: 'board', immediate: true }])
   })
 })
 

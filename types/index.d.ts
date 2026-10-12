@@ -45,6 +45,7 @@ declare module 'claude-code' {
       working: string | null
       banner: Banner | null
       linkedTo: string | null
+      isShown: boolean
     }
   }
 }

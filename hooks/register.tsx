@@ -55,10 +55,16 @@ const composer = atom({ plugin: 'task-board', key: 'composer' } as const, null)
 const working = atom({ plugin: 'task-board', key: 'working' } as const, null)
 const banner = atom({ plugin: 'task-board', key: 'banner' } as const, null)
 const linkedTo = atom({ plugin: 'task-board', key: 'linkedTo' } as const, null)
+const isShown = atom({ plugin: 'task-board', key: 'isShown' } as const, false)
 
 /** The board's full tool name, as Claude calls it: `mcp__task-board__board`, else what registering answered. */
 let toolName = `mcp__task-board__${TOOL}`
 const seen = new Map<string, number>()
+
+async function openBoard($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: PANE, title: TITLE })
+  await update($, isShown, () => true)
+}
 
 /**
  * Writes the board; the first cards Claude puts on an empty board open the
@@ -69,7 +75,7 @@ async function setCards($: EngineInterface, next: (current: Card[]) => Card[], i
   const after = next(before)
   if (JSON.stringify(after) === JSON.stringify(before)) return
   await update($, cards, () => after)
-  if (isClaude && before.length === 0 && after.length > 0) await $.ui.open({ id: PANE, title: TITLE })
+  if (isClaude && before.length === 0 && after.length > 0) await openBoard($)
 }
 
 /** Opens the composer: empty for a new card, or holding `card` to edit it. */
@@ -249,7 +255,7 @@ async function unlink($: EngineInterface, id: string): Promise<void> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'board', description: "Show the session's task board: To do, Doing and Done" })
+    await $.command.register({ name: 'board', description: "Show the session's task board: To do, Doing and Done", immediate: true })
     const registered = await $.tool.register({ name: TOOL, description: BOARD_TOOL_DESCRIPTION, inputSchema: BOARD_TOOL_SCHEMA })
     toolName = registered.tool
     $.clock.every(POLL_MS, () => void syncLinks($).catch(() => undefined))
@@ -281,7 +287,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'board' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE })
+    await openBoard($)
 
     return { text: 'Board opened.' }
   })
@@ -355,7 +361,7 @@ export const register: Register = on => {
     if (outcome.banner !== undefined) {
       const replaced = outcome.banner
       await update($, banner, () => replaced)
-      if (shown === null && replaced !== null && before.length === 0) await $.ui.open({ id: PANE, title: TITLE })
+      if (shown === null && replaced !== null && before.length === 0) await openBoard($)
     }
     const link = outcome.link
     if (link !== undefined) {
@@ -383,6 +389,27 @@ export const register: Register = on => {
     return {}
   })
 
+
+  on('ui.close', async ($, e, next) => {
+    const closed = await next(e)
+    if (e.id === PANE) await update($, isShown, () => false)
+
+    return closed
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const board = await read($, cards)
+    if (e.props.hasSurvey || board.length === 0 || (await read($, isShown))) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const done = board.filter(card => card.column === 'done').length
+
+    return (
+      <Box flexDirection="row" columnGap={1} alignItems="center">
+        <Button key="open-board" label="▦ Board" variant="secondary" onPress={() => void openBoard($)} />
+        <Text dimColor>{`${done} of ${board.length} done`}</Text>
+      </Box>
+    )
+  })
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
