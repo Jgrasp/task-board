@@ -183,71 +183,7 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
   const carried = isDragging ? at.cards.find(card => card.id === drag.id) : undefined
   const carriedCard = carried === undefined ? undefined : props.cards.find(card => card.id === carried.id)
   return (
-    <Box width="100%" height={surface.rows}>
-      {[0, 1, 2].map(column => {
-        const isTarget = isDragging && drag.over === column && drag.from !== column
-        const dot = props.dots[column] ?? null
-        const last = at.cards.filter(placed => placed.column === column).at(-1)
-        return [
-          <Box key={`column:${column}`} position="absolute" top={0} left={leftOf(column)} width={at.columnWidth} flexDirection="row" columnGap={1}>
-            <Text {...(dot === null ? { dimColor: true } : { color: dot })}>●</Text>
-            <Text bold {...(isTarget ? { color: ACCENT } : {})}>
-              {props.names[column] ?? ''}
-            </Text>
-            <Text dimColor>{String(props.counts[column] ?? 0)}</Text>
-          </Box>,
-          isTarget && (
-            <Box
-              key={`drop:${column}`}
-              position="absolute"
-              top={Math.max(1, rowOf(last === undefined ? 1 : last.bottom + 2))}
-              left={leftOf(column)}
-              width={at.columnWidth}
-              borderStyle="round"
-              borderColor={ACCENT}
-              paddingX={1}
-            >
-              <Text color={ACCENT}>Drop here</Text>
-            </Box>
-          ),
-          (props.counts[column] ?? 0) === 0 && !isTarget && offset === 0 && (
-            <Box key={`empty:${column}`} position="absolute" top={1} left={leftOf(column)} width={at.columnWidth} borderStyle="round" borderDimColor paddingX={1}>
-              <Text dimColor>No cards</Text>
-            </Box>
-          ),
-        ]
-      })}
-      {at.cards
-        .filter(placed => rowOf(placed.top) >= 1)
-        .map(placed => {
-          const card = props.cards.find(one => one.id === placed.id)
-          if (card === undefined) return null
-          // The card picked up stays in place, dimmed; its ghost is what moves.
-          const isCarried = isDragging && drag.id === card.id
-          const isLit = !isCarried && (card.isOpen || card.isBusy)
-          return (
-            <Box
-              key={`card:${card.id}`}
-              position="absolute"
-              top={rowOf(placed.top)}
-              left={leftOf(placed.column)}
-              width={at.columnWidth}
-              flexDirection="column"
-              borderStyle="round"
-              {...(isLit ? { borderColor: ACCENT } : { borderDimColor: true })}
-              paddingX={1}
-            >
-              {placed.lines.map(line => (
-                <Text wrap="truncate-end" dimColor={card.isDone || isCarried}>
-                  {line}
-                </Text>
-              ))}
-              <Text dimColor wrap="truncate-end">
-                {card.tag === '' ? ' ' : card.tag}
-              </Text>
-            </Box>
-          )
-        })}
+    <Box flexDirection="row" columnGap={1}>
       {isDragging && carried !== undefined && carriedCard !== undefined && (
         // The ghost: the card under the pointer, held where it was grabbed. A white card with dark
         // text in either theme: a mod's colors are fixed, so the text's is set as well as the fill.
@@ -274,6 +210,60 @@ const Columns: ClientModule<ColumnsProps, State> = (props, surface) => {
           </Text>
         </Box>
       )}
+      {[0, 1, 2].map(column => {
+        const isTarget = isDragging && drag.over === column && drag.from !== column
+        const dot = props.dots[column] ?? null
+        const visible = at.cards.filter(placed => placed.column === column && rowOf(placed.top) >= 1)
+        return (
+          <Box key={`column:${column}`} flexDirection="column" width={at.columnWidth}>
+            <Box flexDirection="row" columnGap={1}>
+              <Text {...(dot === null ? { dimColor: true } : { color: dot })}>●</Text>
+              <Text bold {...(isTarget ? { color: ACCENT } : {})}>
+                {props.names[column] ?? ''}
+              </Text>
+              <Text dimColor>{String(props.counts[column] ?? 0)}</Text>
+            </Box>
+            {visible.map((placed, index) => {
+              const card = props.cards.find(one => one.id === placed.id)
+              if (card === undefined) return null
+              // The card picked up stays in place, dimmed; its ghost is what moves.
+              const isCarried = isDragging && drag.id === card.id
+              const isLit = !isCarried && (card.isOpen || card.isBusy)
+              const above = index === 0 ? rowOf(placed.top) - 1 : 0
+              return (
+                <Box
+                  key={`card:${card.id}`}
+                  flexDirection="column"
+                  borderStyle="round"
+                  {...(isLit ? { borderColor: ACCENT } : { borderDimColor: true })}
+                  paddingX={1}
+                  marginBottom={1}
+                  {...(above > 0 ? { marginTop: above } : {})}
+                >
+                  {placed.lines.map(line => (
+                    <Text wrap="truncate-end" dimColor={card.isDone || isCarried}>
+                      {line}
+                    </Text>
+                  ))}
+                  <Text dimColor wrap="truncate-end">
+                    {card.tag === '' ? ' ' : card.tag}
+                  </Text>
+                </Box>
+              )
+            })}
+            {isTarget && (
+              <Box borderStyle="round" borderColor={ACCENT} paddingX={1}>
+                <Text color={ACCENT}>Drop here</Text>
+              </Box>
+            )}
+            {(props.counts[column] ?? 0) === 0 && !isTarget && (
+              <Box borderStyle="round" borderDimColor paddingX={1}>
+                <Text dimColor>No cards</Text>
+              </Box>
+            )}
+          </Box>
+        )
+      })}
     </Box>
   )
 }

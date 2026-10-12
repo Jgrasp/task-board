@@ -341,8 +341,9 @@ describe('dragging', () => {
     expect(JSON.stringify(await ui.drawn())).toContain('"offset":43},"width":"100%","height":27')
     await ui.resize({ columns: 60, rows: 27, in: 'columns' })
     const columns = JSON.stringify(await ui.drawn({ in: 'columns' }))
-    expect(columns).toMatch(new RegExp(`"key":"card:${ids.at(-1)}","position":"absolute","top":23`))
-    expect(columns).not.toContain(`"key":"card:${ids[0]}"`)
+    expect(columns).toMatch(new RegExp(`"key":"card:${ids[9]}"[^}]*"marginTop":2`))
+    expect(columns).toContain(`"key":"card:${ids.at(-1)}"`)
+    expect(columns).not.toContain(`"key":"card:${ids[8]}"`)
   })
 
   test('a message naming no card, or no column, changes nothing', async ($, on) => {
