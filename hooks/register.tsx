@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Card, Column, SessionLink, SessionState, Tone } from '../types'
+import type { Card, Column, SessionLink, SessionState } from '../types'
 import {
   BOARD_TOOL_DESCRIPTION,
   BOARD_TOOL_SCHEMA,
@@ -10,10 +10,10 @@ import {
   DONE_SHOWN,
   addCard,
   applyLinks,
+  bannerPrompt,
   cardTag,
+  colorOf,
   editCard,
-  forecastPrompt,
-  forecastView,
   linkCard,
   moveCard,
   neighbour,
@@ -27,7 +27,6 @@ import {
   taggedCard,
   taskCreated,
   taskUpdated,
-  todayOf,
   workPrompt,
 } from './lib'
 import type { BoardToolInput } from './lib'
@@ -48,15 +47,13 @@ const TAG: Record<Card['source'], string> = { you: '', todo: '✦', claude: '✦
 const HEADER_ROWS = 3
 /** Cells in the progress bar. */
 const BAR = 12
-const TONE: Record<Tone, string> = { ok: GREEN, tight: '#d29922', late: '#cf222e', info: '#2f81f7' }
 const POLL_MS = 5_000
 
 const cards = atom({ plugin: 'task-board', key: 'cards' } as const, [])
 const selected = atom({ plugin: 'task-board', key: 'selected' } as const, null)
 const composer = atom({ plugin: 'task-board', key: 'composer' } as const, null)
 const working = atom({ plugin: 'task-board', key: 'working' } as const, null)
-const forecast = atom({ plugin: 'task-board', key: 'forecast' } as const, null)
-const today = atom({ plugin: 'task-board', key: 'today' } as const, '')
+const banner = atom({ plugin: 'task-board', key: 'banner' } as const, null)
 const linkedTo = atom({ plugin: 'task-board', key: 'linkedTo' } as const, null)
 
 /** The board's full tool name, as Claude calls it: `mcp__task-board__board`, else what registering answered. */
@@ -201,8 +198,6 @@ async function readLinks($: EngineInterface, dir: string): Promise<Array<{ card:
 }
 
 async function syncLinks($: EngineInterface): Promise<void> {
-  const day = todayOf(await $.clock.now())
-  if ((await read($, today)) !== day) await update($, today, () => day)
   const board = await read($, cards)
   const dir = await linksDir($)
   if (dir === null || board.length === 0) return
@@ -272,9 +267,9 @@ export const register: Register = on => {
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    const plan = await read($, forecast)
-    if (plan === null || (plan.deadline === null && plan.finish === null)) return composed
-    const section = { id: 'task-board:forecast', text: forecastPrompt(plan, todayOf(await $.clock.now())), scope: 'session' as const }
+    const shown = await read($, banner)
+    if (shown === null) return composed
+    const section = { id: 'task-board:banner', text: bannerPrompt(shown), scope: 'session' as const }
 
     return { sections: [...composed.sections, section] }
   })
@@ -348,13 +343,13 @@ export const register: Register = on => {
     if (e.tool !== toolName) return next(e)
     const at = await $.clock.now()
     const before = await read($, cards)
-    const shown = await read($, forecast)
+    const shown = await read($, banner)
     const outcome = runBoardTool(before, e as unknown as BoardToolInput, at, shown)
     await setCards($, () => outcome.cards, true)
-    if (outcome.forecast !== undefined) {
-      const banner = outcome.forecast
-      await update($, forecast, () => banner)
-      if (shown === null && banner !== null && before.length === 0) await $.ui.open({ id: PANE, title: TITLE })
+    if (outcome.banner !== undefined) {
+      const replaced = outcome.banner
+      await update($, banner, () => replaced)
+      if (shown === null && replaced !== null && before.length === 0) await $.ui.open({ id: PANE, title: TITLE })
     }
     const link = outcome.link
     if (link !== undefined) {
@@ -404,8 +399,8 @@ export const register: Register = on => {
     const busy = await read($, working)
     const open = board.find(card => card.id === openId)
     const now = await $.clock.now()
-    const day = (await read($, today)) || todayOf(now)
-    const plan = await read($, forecast)
+    const message = await read($, banner)
+    const Markdown = 'Markdown' in table ? table.Markdown : undefined
 
     const isLive = (card: Card) => card.id === busy || card.session?.state === 'running'
     const tagOf = (card: Card) =>
@@ -468,33 +463,30 @@ export const register: Register = on => {
 
     // The columns fill the pane below the header, so a card can be dragged anywhere under them; with a
     // card's details or the composer open, they keep their own height and those sit right under them.
-    const view = plan === null ? null : forecastView(plan, day)
     const bannerWidth = Math.max(10, e.props.bodyColumns - 4)
     const bannerRows =
-      plan === null || view === null
+      message === null
         ? 0
-        : 4 +
-          (view.dates === '' ? 0 : wrap(view.dates, bannerWidth, 99).length) +
-          (plan.note === '' ? 0 : wrap(plan.note, bannerWidth, 99).length)
-    const banner =
-      plan === null || view === null ? null : (
-        <Box key="forecast" flexDirection="column" borderStyle="round" borderColor={TONE[view.tone]} paddingX={1} marginBottom={1}>
-          <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-            <Text bold color="#ffffff" backgroundColor={TONE[view.tone]}>
-              {` ${view.badge} `}
-            </Text>
-            {view.headline !== '' && (
-              <Text bold color={TONE[view.tone]}>
-                {view.headline}
+        : 3 +
+          (message.title === '' ? 0 : 1) +
+          message.text.split('\n').reduce((rows, line) => rows + Math.max(1, wrap(line, bannerWidth, 99).length), 0) -
+          (message.text === '' ? 1 : 0)
+    const bannerView =
+      message === null ? null : (
+        <Box key="banner" flexDirection="column" borderStyle="round" borderColor={colorOf(message.color)} paddingX={1} marginBottom={1}>
+          {message.title !== '' && (
+            <Box flexDirection="row">
+              <Text bold color="#ffffff" backgroundColor={colorOf(message.color)} wrap="wrap">
+                {` ${message.title} `}
               </Text>
-            )}
-          </Box>
-          {view.dates !== '' && (
-            <Text dimColor wrap="wrap">
-              {view.dates}
-            </Text>
+            </Box>
           )}
-          {plan.note !== '' && <Text wrap="wrap">{plan.note}</Text>}
+          {message.text !== '' &&
+            (Markdown !== undefined ? (
+              <Markdown key="banner-text" text={message.text} />
+            ) : (
+              <Text wrap="wrap">{message.text}</Text>
+            ))}
         </Box>
       )
 
@@ -608,7 +600,7 @@ export const register: Register = on => {
     return (
       // A focus ring at the content's top or bottom edge is cut off: keep a line below the last element.
       <Box flexDirection="column" paddingBottom={1}>
-        {banner}
+        {bannerView}
         {board.length === 0 ? (
           <Box flexDirection="column">
             {header}

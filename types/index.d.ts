@@ -25,13 +25,10 @@ export type Card = {
   session?: SessionLink
 }
 
-export type Tone = 'ok' | 'tight' | 'late' | 'info'
-
-export type Forecast = {
-  deadline: string | null
-  finish: string | null
-  note: string
-  tone: Tone | null
+export type Banner = {
+  title: string
+  text: string
+  color: string
   updatedAt: number
 }
 
@@ -46,8 +43,7 @@ declare module 'claude-code' {
       composer: { id: string | null; title: string; note: string; hasNote: boolean } | null
       /** The card handed to Claude with Work on it, until Claude's turn on it ends. */
       working: string | null
-      forecast: Forecast | null
-      today: string
+      banner: Banner | null
       linkedTo: string | null
     }
   }

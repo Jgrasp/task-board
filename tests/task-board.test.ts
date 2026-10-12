@@ -8,7 +8,6 @@ import {
   addCard,
   applyLinks,
   boardText,
-  forecastView,
   hostOf,
   parseLink,
   planSteps,
@@ -392,12 +391,12 @@ describe('lib', () => {
     expect(many.filter(card => card.column === 'done')).toHaveLength(5)
 
     expect(boardText([])).toBe('The board is empty.')
-    expect(runBoardTool([], { action: 'fly' }, NOW)).toMatchObject({ isError: true, text: 'action is list, add, move, remove, link or forecast.' })
+    expect(runBoardTool([], { action: 'fly' }, NOW)).toMatchObject({ isError: true, text: 'action is list, add, move, remove, link or banner.' })
     expect(runBoardTool([], { action: 'add', title: 'x', column: 'later' }, NOW)).toMatchObject({ isError: true })
   })
 })
 
-describe('sessions and deadline', () => {
+describe('sessions and banner', () => {
   const LINKS = '/home/me/.claude/task-board/links'
 
   type World = { files: Map<string, { text: string; mtime: number }>; runs: string[][] }
@@ -472,7 +471,7 @@ describe('sessions and deadline', () => {
 
   const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as const
 
-  test('Claude links a card by hand and keeps a deadline banner', async ($, on) => {
+  test('Claude links a card by hand and keeps a colored banner', async ($, on) => {
     mock.env(on, { HOME: '/home/me' })
     const files = world(on)
     on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' as const }] }))
@@ -482,33 +481,34 @@ describe('sessions and deadline', () => {
     expect(linked.text).toBe('Linked "Ship the release" to session local_aaaabbbb-cccc.')
     expect([...files.files.keys()]).toEqual([expect.stringMatching(/\/c\w+\.json$/)])
 
-    const set = await $.tool.call({ tool: TOOL, action: 'forecast', deadline: '2026-10-16', finish: '2026-10-13', note: 'QA on Wednesday' })
-    expect(set.text).toBe('Deadline banner: on track, 3 days of margin (deadline 2026-10-16, finish 2026-10-13, note "QA on Wednesday").')
+    const set = await $.tool.call({ tool: TOOL, action: 'banner', title: 'Release Friday', text: 'QA on **Wednesday**', color: 'green' })
+    expect(set.text).toBe('Banner (green): Release Friday — QA on **Wednesday**.')
     expect(state.opened).toEqual(['task-board'])
-    const ui = await $.ui.mount(PANE)
-    expect(await texts(ui)).toEqual(expect.arrayContaining([' ON TRACK ', '3 days of margin', 'Deadline Fri 16 Oct (in 10 days) · Finish Tue 13 Oct', 'QA on Wednesday']))
+    for (const surface of ['desktop', 'vscode'] as const) {
+      const ui = await $.ui.mount({ ...PANE, surface })
+      expect(await ui.find({ type: 'Text', text: ' Release Friday ' })).toBeDefined()
+      expect(await ui.find({ key: 'banner-text' })).toBeDefined()
+      await ui.unmount()
+    }
     const prompt = await $.prompt.compose(COMPOSE)
-    expect(prompt.sections.at(-1)?.id).toBe('task-board:forecast')
-    expect(prompt.sections.at(-1)?.text).toContain('Deadline: 2026-10-16 (in 10 days). Your forecast finish: 2026-10-13, set on 2026-10-06.')
+    expect(prompt.sections.at(-1)?.id).toBe('task-board:banner')
+    expect(prompt.sections.at(-1)?.text).toContain('It reads: Release Friday — QA on **Wednesday**')
 
-    await $.tool.call({ tool: TOOL, action: 'forecast', finish: '2026-10-19' })
-    expect(await texts(ui)).toEqual(expect.arrayContaining([' LATE ', 'Finishing 3 days late']))
-    const bad = await $.tool.call({ tool: TOOL, action: 'forecast', finish: '19/10' })
+    const recolored = await $.tool.call({ tool: TOOL, action: 'banner', color: '#ff8800' })
+    expect(recolored.text).toBe('Banner (#ff8800): Release Friday — QA on **Wednesday**.')
+    const bad = await $.tool.call({ tool: TOOL, action: 'banner', color: 'chartreuse' })
     expect(bad.isError).toBe(true)
+    const listed = await $.tool.call({ tool: TOOL, action: 'list' })
+    expect(listed.text).toMatch(/^Banner \(#ff8800\): Release Friday — QA on \*\*Wednesday\*\*\n\nTo do \(0\)\n\nDoing \(1\)\n- \[c\w+\] Ship the release \(session: linked\)/)
 
-    await $.tool.call({ tool: TOOL, action: 'forecast', deadline: '', finish: '', note: '' })
-    expect(await ui.find({ key: 'forecast' })).toBeUndefined()
+    const removed = await $.tool.call({ tool: TOOL, action: 'banner', title: '', text: '' })
+    expect(removed.text).toBe('Removed the banner.')
+    const ui = await $.ui.mount(PANE)
+    expect(await ui.find({ key: 'banner-text' })).toBeUndefined()
     expect((await $.prompt.compose(COMPOSE)).sections.map(one => one.id)).toEqual(['intro'])
   })
 
-  test('forecast tones, tags and links', () => {
-    const at = { note: '', tone: null, updatedAt: NOW } as const
-    expect(forecastView({ ...at, deadline: '2026-10-16', finish: '2026-10-15' }, '2026-10-06')).toMatchObject({ tone: 'tight', headline: '1 day of margin' })
-    expect(forecastView({ ...at, deadline: '2026-10-16', finish: '2026-10-16' }, '2026-10-06')).toMatchObject({ tone: 'tight', headline: 'No margin left' })
-    expect(forecastView({ ...at, deadline: '2026-10-16', finish: null }, '2026-10-06')).toMatchObject({ tone: 'info', badge: 'DEADLINE', headline: 'Due in 10 days' })
-    expect(forecastView({ ...at, deadline: '2026-10-01', finish: null }, '2026-10-06')).toMatchObject({ tone: 'late', headline: 'Deadline passed 5 days ago' })
-    expect(forecastView({ ...at, deadline: null, finish: null, note: 'Demo on Friday', tone: 'ok' }, '2026-10-06')).toMatchObject({ tone: 'ok', dates: '' })
-
+  test('tags and links', () => {
     expect(taggedCard('[board:c1x2] Do it')).toBe('c1x2')
     expect(taggedCard('board c1x2')).toBeNull()
     expect(hostOf('claude://claude.ai/epitaxy/local_0000aaaa-1111')).toBe('local_0000aaaa-1111')
