@@ -147,7 +147,7 @@ const FRAMING = /^(context|overview|summary|background|goal|goals|plan|approach|
 /**
  * The steps of an approved plan, as cards: its numbered items, else its
  * top-level bullets, else its section headings (not the ones that frame it,
- * such as Context or Verification). At most 20.
+ * such as Context or Verification).
  */
 export function planSteps(plan: string): string[] {
   const lines = plan.split('\n')
@@ -162,7 +162,7 @@ export function planSteps(plan: string): string[] {
   const headings = pick(/^#{2,4}\s+(?:(?:step|phase)\s*\d+\s*[:.\-–]\s*)?(.+)$/i).filter(step => !FRAMING.test(step))
   const steps = numbered.length >= 2 ? numbered : bullets.length >= 2 ? bullets : headings
 
-  return steps.slice(0, 20).map(cleanTitle)
+  return steps.map(cleanTitle)
 }
 
 /** What Work on it sends Claude. */
